@@ -1,0 +1,20 @@
+{
+  "name": "decision-council",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLN Decision Council — five-advisor AI deliberation for PL Network members",
+  "scripts": {
+    "start": "node server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "jose": "^5.9.6",
+    "mammoth": "^1.8.0",
+    "multer": "^1.4.5-lts.1",
+    "pdf-parse": "^1.1.1"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
+  }
+}

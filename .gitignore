@@ -1,0 +1,17 @@
+# Personal deploy token (tied to your PLN account) — never commit
+pln-app.config.json
+
+# Dependencies / build
+node_modules/
+coverage/
+
+# Env & secrets
+.env
+.env.*
+*.local
+
+# Local tooling state
+.claude/settings.local.json
+.vscode/
+.DS_Store
+npm-debug.log

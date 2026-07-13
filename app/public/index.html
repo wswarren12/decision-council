@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Decision Council</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="pln-theme.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <!-- History rail (F-3) deferred to v2: no identity source is available
+         yet (LabOS JWT contract unresolved), so per-user history can't be
+         scoped honestly. See BUILD-NOTES.md. -->
+
+    <!-- Main chat surface (F-2) -->
+    <main class="main">
+      <header class="masthead">
+        <div class="masthead-mark" aria-hidden="true">DC</div>
+        <div>
+          <h1>Decision Council</h1>
+          <p class="masthead-sub">Five independent advisors. One argument-weighted verdict.</p>
+        </div>
+        <span class="session-chip" id="session-chip" hidden></span>
+      </header>
+
+      <div id="banner" class="banner" hidden></div>
+
+      <section id="thread" class="thread" aria-live="polite"></section>
+
+      <!-- Composer -->
+      <footer class="composer" id="composer">
+        <div id="attachment-chips" class="chips"></div>
+        <div class="composer-row">
+          <textarea id="question" rows="2" maxlength="4200"
+            placeholder="Bring the council a judgment call — take the partnership, kill the feature, restructure the deal…"
+            aria-label="Your decision question"></textarea>
+          <div class="composer-actions">
+            <label class="attach-btn" for="file-input" title="Attach documents (.pdf, .docx, .md, .txt — 20 MB total)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+              <span class="sr-only">Attach documents</span>
+            </label>
+            <input type="file" id="file-input" multiple accept=".pdf,.docx,.md,.txt" hidden>
+            <div class="mode-toggle" role="radiogroup" aria-label="Council mode">
+              <button type="button" class="mode-opt active" data-mode="full" role="radio" aria-checked="true">Full</button>
+              <button type="button" class="mode-opt" data-mode="quick" role="radio" aria-checked="false">Quick</button>
+            </div>
+            <button id="submit-btn" class="pln-button submit-btn" type="button">Convene</button>
+          </div>
+        </div>
+        <p id="input-error" class="input-error" role="alert" hidden></p>
+        <p class="disclosure">Document contents are sent to the AI provider (Anthropic) for analysis — don't attach credentials or regulated personal data. Live councils run on a PL-provided key with a shared daily limit.</p>
+      </footer>
+    </main>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

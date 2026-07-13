@@ -1,0 +1,39 @@
+:root {
+  /* Protocol Labs Network design tokens */
+  --pln-color-bg: #ffffff;
+  --pln-color-surface: #f1f5f9;
+  --pln-color-text: #0f172a;
+  --pln-color-muted: #64748b;
+  --pln-color-primary: #156ff7;
+  --pln-color-primary-hover: #1d4ed8;
+  --pln-color-border: #cbd5e1;
+  --pln-radius: 8px;
+  --pln-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --pln-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+body {
+  margin: 0;
+  font-family: var(--pln-font-sans);
+  color: var(--pln-color-text);
+  background: var(--pln-color-bg);
+}
+
+.pln-button {
+  background: var(--pln-color-primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--pln-radius);
+  padding: 10px 16px;
+  font: inherit;
+  cursor: pointer;
+}
+.pln-button:hover { background: var(--pln-color-primary-hover); }
+
+.pln-card {
+  background: var(--pln-color-surface);
+  border: 1px solid var(--pln-color-border);
+  border-radius: var(--pln-radius);
+  box-shadow: var(--pln-shadow);
+  padding: 16px;
+}
