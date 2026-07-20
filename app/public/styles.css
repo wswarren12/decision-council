@@ -79,6 +79,10 @@ body {
   display: flex; flex-direction: column; gap: 14px;
   scroll-behavior: smooth;
 }
+/* Thread items must keep their natural height: as flex children, anything
+   with overflow:hidden (verdict card, chair card) otherwise gets crushed
+   to ~2px once the thread scrolls. */
+.thread > * { flex-shrink: 0; }
 
 .empty-state {
   margin: auto; max-width: 460px; text-align: center;
@@ -202,6 +206,70 @@ details[open] .caret { transform: rotate(180deg); }
 .verdict-section.the-verdict {
   border-left: 3px solid var(--dc-yellow);
   padding-left: 12px; margin-left: -2px;
+}
+/* the Chairperson's split-out Council direction card */
+.chair-card {
+  border-left: 3px solid var(--dc-yellow);
+  animation: rise 0.45s ease both;
+}
+.chair-card .chair-avatar {
+  background: var(--dc-yellow); color: #1f2933;
+}
+
+/* the Chairperson's decision table (stage 4) + Word download */
+.decision-table-card {
+  border: 1px solid var(--dc-border); border-radius: var(--dc-radius);
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.09);
+  overflow: hidden;
+  animation: rise 0.45s ease both;
+}
+.decision-table-card .verdict-band { align-items: center; }
+.decision-table-card .dl-docx {
+  margin-left: auto; font-size: 12px; padding: 5px 12px;
+  background: #fff; color: var(--dc-blue); border: none; cursor: pointer;
+  border-radius: calc(var(--dc-radius) - 4px); font-weight: 600;
+}
+.decision-table-card .dl-docx:disabled { opacity: 0.6; cursor: default; }
+.dt-meta { padding: 10px 18px 0; }
+.dt-meta p { margin: 4px 0; font-size: 13px; }
+.dt-scroll { overflow-x: auto; padding: 10px 18px 16px; }
+.decision-table {
+  border-collapse: collapse; width: 100%; min-width: 640px;
+  font-size: 12.5px; line-height: 1.45;
+}
+.decision-table th, .decision-table td {
+  border: 1px solid var(--dc-border);
+  padding: 7px 10px; text-align: left; vertical-align: top;
+}
+.decision-table thead th {
+  background: var(--dc-blue); color: #fff; font-weight: 600;
+  font-size: 12px;
+}
+.decision-table .row-label {
+  background: #f4f6f8; font-weight: 600; white-space: nowrap;
+}
+.decision-table thead .row-label { background: var(--dc-blue); }
+.decision-table .reco-row td { background: #fffbeb; }
+.decision-table .reco-row .row-label { background: #f4ecd4; }
+
+/* the Chairperson's pre-council request for the status quo baseline */
+.context-request .context-answer {
+  width: 100%; box-sizing: border-box; margin-top: 8px;
+  border: 1px solid var(--dc-border); border-radius: calc(var(--dc-radius) - 4px);
+  padding: 8px 10px; font: inherit; font-size: 13px; resize: vertical;
+}
+
+/* round-2 cards: revised opinion first, peer review demoted below it */
+.peer-review {
+  margin-top: 14px; padding-top: 10px;
+  border-top: 1px dashed var(--dc-border);
+  color: var(--dc-muted);
+}
+.peer-review h4 {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--dc-muted);
+  margin: 0 0 4px;
 }
 
 /* markdown bits inside bubbles/cards */

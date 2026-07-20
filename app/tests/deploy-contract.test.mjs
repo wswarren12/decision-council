@@ -13,9 +13,13 @@ const BASE = `http://localhost:${PORT}`;
 let child;
 
 beforeAll(async () => {
+  // Strip the key so demo-mode behavior is deterministic regardless of the
+  // developer's shell environment.
+  const env = { ...process.env, PORT: String(PORT) };
+  delete env.ANTHROPIC_API_KEY;
   child = spawn('node', ['server.js'], {
     cwd: APP,
-    env: { ...process.env, PORT: String(PORT) },
+    env,
     stdio: 'ignore',
   });
   for (let i = 0; i < 40; i++) {
@@ -44,6 +48,23 @@ describe('PLN deploy contract', () => {
     expect(html).toContain('Decision Council');
   });
 
+  it('GET / carries the legal/accounting/financial advice disclaimer', async () => {
+    const html = await (await fetch(`${BASE}/`)).text();
+    expect(html).toContain('does not provide legal, accounting, or financial advice');
+    expect(html).toContain('appropriate Protocol Labs team');
+  });
+
+  it('the SPA never auto-switches Full→Quick — a suggestion needs a member click', async () => {
+    const src = await (await fetch(`${BASE}/app.js`)).text();
+    const suggestBlock = src.match(/if \(intake\.suggest_quick[\s\S]*?\n    \}/)?.[0] ?? '';
+    expect(suggestBlock, 'suggest_quick handling not found').not.toBe('');
+    // The mode change must live behind a user action (button onClick),
+    // never as a direct statement in the suggestion branch.
+    expect(suggestBlock).toContain('onClick');
+    expect(suggestBlock).toContain('Switch to Quick');
+    expect(suggestBlock.replace(/onClick:.*$/gm, '')).not.toContain("setModeUI('quick')");
+  });
+
   it('sends NO X-Frame-Options header', async () => {
     for (const path of ['/', '/health', '/api/config']) {
       const res = await fetch(`${BASE}${path}`);
@@ -58,11 +79,33 @@ describe('PLN deploy contract', () => {
     expect(csp).not.toContain("frame-ancestors 'none'");
   });
 
-  it('/api/config ships only public values', async () => {
+  it('/api/config ships only public booleans — never key material', async () => {
     const cfg = await (await fetch(`${BASE}/api/config`)).json();
-    expect(cfg.supabaseUrl).toMatch(/^https:\/\/.*supabase\.co$/);
-    const payload = JSON.parse(Buffer.from(cfg.supabaseAnonKey.split('.')[1], 'base64url').toString());
-    expect(payload.role).toBe('anon');
+    expect(typeof cfg.live).toBe('boolean');
+    expect(typeof cfg.labosConfigured).toBe('boolean');
+    expect(JSON.stringify(cfg)).not.toContain('sk-' + 'ant-');
+  });
+
+  it('/api/council degrades to a structured demo signal without an API key (AC-6.1)', async () => {
+    // The test server is spawned WITHOUT ANTHROPIC_API_KEY (see beforeAll).
+    const res = await fetch(`${BASE}/api/council`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'intake', question: 'Should we take the partnership?' }),
+    });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toBe('no_api_key');
+    expect(body.demo).toBe(true);
+  });
+
+  it('/api/council rejects unknown actions', async () => {
+    const res = await fetch(`${BASE}/api/council`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'nope' }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it('/api/session reports unconfigured while OQ#8 is unresolved (no header trust)', async () => {

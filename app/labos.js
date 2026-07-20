@@ -18,23 +18,24 @@ const CONFIG = {
   headerName: (process.env.LABOS_JWT_HEADER || 'x-labos-jwt').toLowerCase(),
 };
 
-function isConfigured() {
+export function isConfigured() {
   return Boolean(CONFIG.jwksUrl && CONFIG.issuer && CONFIG.audience);
 }
 
-let jwks = null; // lazily-created remote JWKS (jose is ESM-only)
+import { createRemoteJWKSet, jwtVerify } from 'jose';
+
+let jwks = null; // lazily-created remote JWKS
 
 // Returns { mode: 'labos', token, sub } on a verified forwarded token,
 // { mode: 'unconfigured' } while OQ#8 is unresolved, and
 // { mode: 'unauthenticated' } for a missing/forged/expired token.
-async function resolveSession(req) {
+export async function resolveSession(req) {
   if (!isConfigured()) return { mode: 'unconfigured' };
 
   const token = req.headers[CONFIG.headerName];
   if (!token || typeof token !== 'string') return { mode: 'unauthenticated' };
 
   try {
-    const { createRemoteJWKSet, jwtVerify } = await import('jose');
     if (!jwks) jwks = createRemoteJWKSet(new URL(CONFIG.jwksUrl));
     const { payload } = await jwtVerify(token, jwks, {
       issuer: CONFIG.issuer,
@@ -50,5 +51,3 @@ async function resolveSession(req) {
     return { mode: 'unauthenticated' };
   }
 }
-
-module.exports = { resolveSession, isConfigured };

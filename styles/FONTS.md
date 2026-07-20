@@ -2,7 +2,13 @@
 
 The PLN UI uses **Inter** as its primary typeface.
 
-Load it in your HTML `<head>`:
+**Building with the PL Design System (preferred)?** The Inter variable font is
+already self-hosted in `pl-design-system/public/fonts/` and wired up by
+`pl-design-system/styles/globals.scss` — see `pl-design-system/USAGE.md`. You
+don't need anything here.
+
+**Plain-HTML / non-React app** using `styles/pln-theme.css`? Load Inter from the
+CDN in your `<head>`:
 
 ```html
 <link rel="preconnect" href="https://fonts.googleapis.com" />

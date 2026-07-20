@@ -119,16 +119,33 @@ describe('prompt assembly (AC-1.C / AC-5.1 / AC-4.3)', () => {
     expect(p).toContain('THE-PACK-BODY'); // preamble present in all 11 calls
   });
 
-  it('the chairman prompt demands all seven verdict sections', () => {
+  it('stage-2 prompts mandate the Peer review / Revised opinion structure (UI reorders on these)', () => {
+    const p = buildStage2Prompt({
+      preamble,
+      charter: PERSONAS.executor,
+      ownLetter: 'A',
+      ownOpinion: 'mine',
+      peers: LETTERS.filter((l) => l !== 'A').map((l) => ({ letter: l, text: `peer-${l}` })),
+      restated: 'r',
+    });
+    expect(p).toContain('### Peer review');
+    expect(p).toContain('### Revised opinion');
+  });
+
+  it('the chairman prompt demands all eight verdict sections, Council direction first', () => {
     const p = buildChairmanPrompt({
       preamble, restated: 'r', question: 'q',
       opinions: LETTERS.map((l) => ({ letter: l, text: 't' })),
       mode: 'full',
     });
-    for (const h of ['## The question', '## Where the council converged', '## Live disagreements',
-      '## The verdict', '## First step', '## Biggest risk', '## Unresolved questions']) {
+    for (const h of ['## Council direction', '## The question', '## Where the council converged',
+      '## Live disagreements', '## The verdict', '## First step', '## Biggest risk',
+      '## Unresolved questions']) {
       expect(p).toContain(h);
     }
+    expect(p.indexOf('## Council direction')).toBeLessThan(p.indexOf('## The question'));
+    expect(p).toContain('consensus view');
+    expect(p).toContain('divergent views');
   });
 });
 

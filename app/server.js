@@ -1,14 +1,17 @@
-// Decision Council — thin PLN sandbox container.
+// Decision Council — self-contained PLN sandbox container.
 //
-// Holds NO secrets (the sandbox injects none): it serves the SPA, answers
-// /health, verifies the forwarded LabOS JWT (shim — PRD F-7 / OQ#8), and
-// extracts attachment text. Everything secret-touching (LLM calls, the
-// persona mappings) lives in the Supabase Edge Functions.
+// Serves the SPA, answers /health, extracts attachment text, and runs the
+// five-advisor deliberation engine (council.js) against the Anthropic API.
+// ANTHROPIC_API_KEY arrives as a regular env var via the LabOS secrets flow
+// (v1.3 kit draft registration); without it the app degrades to demo mode.
 
-const express = require('express');
-const multer = require('multer');
-const { resolveSession, isConfigured } = require('./labos');
-const { extractAll, MAX_TOTAL_BYTES } = require('./extract');
+import express from 'express';
+import multer from 'multer';
+import { resolveSession, isConfigured } from './labos.js';
+import { extractAll, MAX_TOTAL_BYTES } from './extract.js';
+import { councilHandler, liveEnabled } from './council.js';
+import { validateDecisionTable } from './lib/council-core.mjs';
+import { decisionTableDocx } from './lib/docx.mjs';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -28,30 +31,44 @@ app.use((_req, res, next) => {
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
-// Public, non-secret runtime config for the SPA. The Supabase anon key is
-// public by design — access control is enforced by RLS, not by hiding it.
+// Public, non-secret runtime config for the SPA. `live` only reports WHETHER
+// a key is configured — never the key itself.
 app.get('/api/config', (_req, res) => {
   res.json({
-    supabaseUrl: process.env.SUPABASE_URL || 'https://zhetwcmfrzrsokfzthhl.supabase.co',
-    supabaseAnonKey: process.env.SUPABASE_ANON_KEY ||
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpoZXR3Y21mcnpyc29rZnp0aGhsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MzM0MjEsImV4cCI6MjA5OTEwOTQyMX0.jQNd3zLU-O5j7-VF8u8lS4eFp_qhU6BE1LfwIlks2Ko',
+    live: liveEnabled(),
     labosConfigured: isConfigured(),
   });
 });
 
 // LabOS identity (F-7). The gateway forwards the member JWT on requests it
 // proxies to this container, so the SPA asks here for its session. Until
-// OQ#8 is resolved this reports "unconfigured" and the SPA uses the interim
-// anonymous-auth fallback (or demo mode).
+// OQ#8 is resolved this reports "unconfigured" and the SPA runs identity-less.
 app.get('/api/session', async (req, res) => {
   const session = await resolveSession(req);
-  // The verified token is returned to the SPA for Supabase third-party auth;
-  // it is never logged and never placed in a URL.
+  // The verified token is never logged and never placed in a URL.
   res.json(session);
 });
 
+// The deliberation engine (intake / start / stage / table / followup).
+app.post('/api/council', express.json({ limit: '2mb' }), councilHandler);
+
+// Word-document render of a Chairperson decision table. Stateless by design:
+// the SPA posts back the table JSON it received from the `table` action (or
+// the demo fixture), so downloads keep working even after a container
+// restart forgets the in-memory deliberation. The same validator that gated
+// the model's output gates this input, and every string is XML-escaped.
+app.post('/api/decision-table.docx', express.json({ limit: '256kb' }), (req, res) => {
+  const table = validateDecisionTable(req.body?.table);
+  if (!table) return res.status(400).json({ error: 'invalid_table' });
+  res.set({
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'Content-Disposition': 'attachment; filename="decision-table.docx"',
+  });
+  res.send(decisionTableDocx(table));
+});
+
 // Attachment text extraction (F-4). Files are transient — held in memory for
-// extraction only; extracted text is stored in Postgres by the Edge Function.
+// extraction only; extracted text lives on the in-memory deliberation.
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_TOTAL_BYTES, files: 12 },

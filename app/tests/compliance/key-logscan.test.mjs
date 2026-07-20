@@ -1,7 +1,8 @@
-// AC-6.2: the Anthropic key and service_role key exist ONLY as Supabase
-// secrets. Nothing shippable (anything under app/ that isn't excluded from
-// the deploy zip) may contain key material. The only JWT allowed in the
-// bundle is the PUBLIC anon key (role: "anon" — safe by design under RLS).
+// AC-6.2 (v1.3 secrets flow): the Anthropic key exists ONLY as a runtime env
+// var injected by LabOS — the member enters it on the app's LabOS page, never
+// in code or config. Nothing shippable (anything under app/ that isn't
+// excluded from the deploy zip) may contain key material, and since the
+// Supabase backend was retired, no JWT of any kind ships either.
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -14,7 +15,6 @@ const APP = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SKIP = new Set(['node_modules', 'coverage', '.DS_Store', 'tests']);
 // Built by concatenation so this scanner never matches itself elsewhere.
 const ANTHROPIC_PREFIX = 'sk-' + 'ant-';
-const SERVICE_ROLE_LITERAL = 'SUPABASE_SERVICE' + '_ROLE_KEY';
 
 function walk(dir) {
   return readdirSync(dir).flatMap((name) => {
@@ -33,21 +33,24 @@ describe('no secret material in the shippable app', () => {
     }
   });
 
-  it('every JWT-shaped string in the bundle decodes to role "anon"', () => {
-    const jwtRx = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g;
-    for (const f of files) {
-      for (const token of readFileSync(f, 'utf8').match(jwtRx) ?? []) {
-        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
-        expect(payload.role, `${relative(APP, f)} ships a JWT with role "${payload.role}"`).toBe('anon');
+  it('reads the key ONLY from process.env — never a literal or config file', () => {
+    // Every mention of ANTHROPIC_API_KEY in code must be a process.env read.
+    for (const f of files.filter((x) => /\.(js|mjs|json)$/.test(x))) {
+      const src = readFileSync(f, 'utf8');
+      for (const line of src.split('\n')) {
+        if (line.includes('ANTHROPIC_API_KEY') && !line.trim().startsWith('//')) {
+          expect(line.includes('process.env.ANTHROPIC_API_KEY') || line.includes('env.ANTHROPIC_API_KEY'),
+            `${relative(APP, f)} references ANTHROPIC_API_KEY outside process.env: ${line.trim()}`).toBe(true);
+        }
       }
     }
   });
 
-  it('no service_role literal outside comments/docs', () => {
-    for (const f of files.filter((x) => /\.(js|mjs|json|html|css)$/.test(x))) {
-      const code = readFileSync(f, 'utf8')
-        .split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
-      expect(code.includes(SERVICE_ROLE_LITERAL), `${relative(APP, f)} references the service_role key`).toBe(false);
+  it('no JWT-shaped string ships at all (the Supabase anon key is gone)', () => {
+    const jwtRx = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g;
+    for (const f of files) {
+      const hits = readFileSync(f, 'utf8').match(jwtRx) ?? [];
+      expect(hits.length, `${relative(APP, f)} ships a JWT-shaped string`).toBe(0);
     }
   });
 

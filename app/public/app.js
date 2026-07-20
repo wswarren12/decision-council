@@ -1,10 +1,10 @@
 // Decision Council SPA (F-2/F-4/F-6 client side).
 //
 // v1 runs IDENTITY-LESS: LabOS auth (F-7) and per-user history (F-3) are
-// deferred to v2 (no JWT source is available yet), so there is no sign-in,
-// no history rail, and no client-side DB access. The browser talks only to
-// this container and the `council` Edge Function, authenticated with the
-// public anon key (a valid project JWT; RLS still locks all tables away).
+// deferred to v2 (no JWT source is available yet), so there is no sign-in
+// and no history rail. The browser talks ONLY to this container — the
+// deliberation engine runs server-side at /api/council, holding the
+// Anthropic key as a runtime env var (LabOS secrets flow).
 // Advisors surface ONLY as Advisor A–E; persona names never exist client-side.
 
 const LETTERS = ['A', 'B', 'C', 'D', 'E'];
@@ -80,8 +80,15 @@ function extractConfidence(text) {
 async function boot() {
   try {
     state.config = await (await fetch('/api/config')).json();
-    state.session = 'live';
-    setSessionChip('Session-only · saved history arrives in v2');
+    if (state.config.live) {
+      state.session = 'live';
+      setSessionChip('Session-only · saved history arrives in v2');
+    } else {
+      // The container reports no API key configured — demo mode up front.
+      state.session = 'demo';
+      setSessionChip('Demo mode');
+      setBanner('The live council is unavailable right now (no API key configured). The example deliberation still shows the full experience.');
+    }
   } catch {
     state.session = 'demo';
     setSessionChip('Demo mode');
@@ -109,21 +116,13 @@ function setBanner(text, actions = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Edge Function transport (anon-key session; RLS keeps all tables unreadable)
+// Council transport — same-origin /api/council on this container
 // ---------------------------------------------------------------------------
 
-function authHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    apikey: state.config.supabaseAnonKey,
-    Authorization: `Bearer ${state.config.supabaseAnonKey}`,
-  };
-}
-
 async function council(body) {
-  const res = await fetch(`${state.config.supabaseUrl}/functions/v1/council`, {
+  const res = await fetch('/api/council', {
     method: 'POST',
-    headers: authHeaders(),
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -139,9 +138,9 @@ async function council(body) {
 
 // SSE-over-fetch for stage runs; calls onEvent per parsed event.
 async function councilStage(deliberationId, stage, onEvent) {
-  const res = await fetch(`${state.config.supabaseUrl}/functions/v1/council`, {
+  const res = await fetch('/api/council', {
     method: 'POST',
-    headers: authHeaders(),
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'stage', deliberation_id: deliberationId, stage }),
   });
   if (!res.ok || !res.body) {
@@ -182,7 +181,7 @@ function renderEmptyState() {
       <h2>Bring the council a judgment call</h2>
       <p>Five independent AI advisors — each with a different charter, all grounded in
       Protocol Labs' mission — deliberate your decision through blind opinions,
-      anonymized peer review, and a Chairman's verdict. You see arguments, not roles:
+      anonymized peer review, and a Chairperson's verdict. You see arguments, not roles:
       advisors are only ever A through E.</p>
       <button class="pln-button" id="play-demo">Play an example deliberation</button>
       ${state.session === 'demo' ? '' : '<p style="margin-top:14px">…or type your decision below to convene a live council.</p>'}
@@ -226,16 +225,23 @@ async function playDemo() {
     }
     prog.completeStage(2);
 
-    prog.setStage(3, "Chairman's synthesis");
+    prog.setStage(3, "Chairperson: synthesizing the council's summary & verdict");
     await sleep(900);
     renderVerdict(d.verdict, d.mode, d.confidence_spread);
     prog.completeStage(3);
-    prog.done('Deliberation complete');
+
+    if (d.decision_table) {
+      prog.setStage(4, 'Chairperson: drafting the decision table');
+      await sleep(800);
+      renderDecisionTable(d.decision_table);
+      prog.completeStage(4);
+    }
+    prog.done('Deliberation complete · decision table ready');
 
     await sleep(400);
     addToThread(el(`<div class="bubble followup-q">${esc(d.followup_example.q)}</div>`));
     await sleep(700);
-    addToThread(el(`<div class="bubble system"><strong>Chairman:</strong><div class="md">${mdLite(d.followup_example.a)}</div></div>`));
+    addToThread(el(`<div class="bubble system"><strong>Chairperson:</strong><div class="md">${mdLite(d.followup_example.a)}</div></div>`));
     addToThread(el(`<div class="bubble system">End of example. ${state.session === 'demo'
       ? 'Live councils are unavailable right now.'
       : 'Type your own decision below to convene a live council.'}</div>`));
@@ -249,8 +255,10 @@ async function playDemo() {
 // ---------------------------------------------------------------------------
 
 function renderStageProgress(mode) {
-  const stages = mode === 'quick' ? [1, 3] : [1, 2, 3];
-  const labels = { 1: 'R1', 2: 'R2', 3: '⚖' };
+  // Stage 4 is the Chairperson's decision table — every council that reaches
+  // a verdict ends with one.
+  const stages = mode === 'quick' ? [1, 3, 4] : [1, 2, 3, 4];
+  const labels = { 1: 'R1', 2: 'R2', 3: '⚖', 4: '▦' };
   const node = addToThread(el(`
     <div class="stage-progress">
       <div class="pips">${stages.map((s) => `<span class="pip" data-stage="${s}">${labels[s]}</span>`).join('')}</div>
@@ -276,6 +284,18 @@ function renderStageProgress(mode) {
   };
 }
 
+// Round-2 output carries exact `### Peer review` / `### Revised opinion`
+// headings. The model WRITES peer reactions first (reacting primes a better
+// revision), but members care most about the revised opinion — so the card
+// DISPLAYS the revision first and the peer review below it.
+function splitRound2(text) {
+  const m = String(text ?? '').match(/###\s*Revised opinion\s*\n?/i);
+  if (!m) return null;
+  const revised = text.slice(m.index + m[0].length).trim();
+  const peer = text.slice(0, m.index).replace(/###\s*Peer review\s*\n?/i, '').trim();
+  return revised ? { revised, peer } : null;
+}
+
 function renderRoundBlock(stage, title) {
   const block = addToThread(el(`
     <div class="round-block" data-round="${stage}">
@@ -286,6 +306,11 @@ function renderRoundBlock(stage, title) {
     addCard(letter, text) {
       if (block.querySelector(`[data-letter="${letter}"]`)) return;
       const conf = extractConfidence(text);
+      const split = stage === 2 ? splitRound2(text) : null;
+      const bodyHtml = split
+        ? `${mdLite(split.revised)}${split.peer
+          ? `<div class="peer-review"><h4>Peer review of fellow advisors</h4>${mdLite(split.peer)}</div>` : ''}`
+        : mdLite(text);
       const card = el(`
         <details class="advisor-card" data-letter="${esc(letter)}">
           <summary class="advisor-summary">
@@ -294,7 +319,7 @@ function renderRoundBlock(stage, title) {
             ${conf ? `<span class="conf-chip">${esc(conf)} confidence</span>` : ''}
             <svg class="caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
           </summary>
-          <div class="advisor-body md">${mdLite(text)}</div>
+          <div class="advisor-body md">${bodyHtml}</div>
         </details>`);
       // Keep letters in order regardless of arrival order.
       const cards = [...block.querySelectorAll('.advisor-card')];
@@ -306,8 +331,9 @@ function renderRoundBlock(stage, title) {
 }
 
 const VERDICT_SECTIONS = [
-  'The question', 'Where the council converged', 'Live disagreements',
-  'The verdict', 'First step', 'Biggest risk', 'Unresolved questions',
+  'Council direction', 'The question', 'Where the council converged',
+  'Live disagreements', 'The verdict', 'First step', 'Biggest risk',
+  'Unresolved questions',
 ];
 
 function renderVerdict(text, mode, confidenceSpread) {
@@ -323,7 +349,24 @@ function renderVerdict(text, mode, confidenceSpread) {
       sections[current].push(line);
     }
   }
+  // The Council direction summary is split out into its OWN expandable card
+  // so it reads as the Chairperson's voice in the thread — after Advisor E,
+  // before the full verdict and the follow-up prompt. Open by default.
+  const directionKey = Object.keys(sections).find((k) => k.toLowerCase() === 'council direction');
+  if (directionKey) {
+    addToThread(el(`
+      <details class="advisor-card chair-card" open>
+        <summary class="advisor-summary">
+          <span class="letter-avatar chair-avatar">⚖</span>
+          <span class="advisor-name">Chairperson — Council direction</span>
+          ${confidenceSpread ? `<span class="conf-chip">${esc(confidenceSpread)}</span>` : ''}
+          <svg class="caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </summary>
+        <div class="advisor-body md">${mdLite(sections[directionKey].join('\n'))}</div>
+      </details>`));
+  }
   const body = VERDICT_SECTIONS
+    .filter((name) => name !== 'Council direction')
     .map((name) => {
       const found = Object.keys(sections).find((k) => k.toLowerCase() === name.toLowerCase());
       if (!found) return '';
@@ -334,7 +377,7 @@ function renderVerdict(text, mode, confidenceSpread) {
   const node = el(`
     <div class="verdict-card">
       <div class="verdict-band">
-        <h3>Chairman's Verdict</h3>
+        <h3>Chairperson's Verdict</h3>
         <span class="verdict-mode">${mode === 'quick' ? 'Quick council' : 'Full council'}${confidenceSpread ? ` · ${esc(confidenceSpread)}` : ''}</span>
       </div>
       <div class="verdict-body">${body || `<div class="md">${mdLite(text)}</div>`}</div>
@@ -389,35 +432,30 @@ async function onSubmit() {
     thinking.remove();
 
     if (!intake.convene) {
-      // Triage: factual/low-stakes → answer directly (AC-1.6).
+      // Triage: factual/low-stakes → answer directly (AC-1.6). The turn is
+      // over: release the running flag so the member can submit a new
+      // question right away (the finally block re-enables the button).
       addToThread(el(`<div class="bubble system"><strong>The council isn't convening for this one.</strong><div class="md">${mdLite(intake.direct_answer || 'This reads as a factual question with a checkable answer rather than a judgment call.')}</div></div>`));
       $('#question').value = '';
+      state.running = false;
       return;
     }
 
+    // The intake may SUGGEST a quick council, but never switches the mode
+    // itself — the member stays in control of the protocol they asked for.
     if (intake.suggest_quick && state.mode === 'full') {
-      setModeUI('quick');
-      setBanner('This looks like a smaller call — Quick council suggested (no peer-review round). Switch back to Full if you want the complete protocol.');
+      setBanner('This looks like a smaller call — a Quick council (no peer-review round) may serve. You’re set to Full.',
+        [{ label: 'Switch to Quick', onClick: () => { setModeUI('quick'); setBanner(''); } }]);
     }
 
-    const confirm = addToThread(el(`
-      <div class="bubble system">
-        <strong>Restated for the record:</strong> ${esc(intake.restated)}
-        <div class="confirm-row">
-          <button class="pln-button" data-act="confirm">Convene the council</button>
-          <button class="ghost-btn" data-act="edit">Edit my question</button>
-        </div>
-      </div>`));
-    confirm.querySelector('[data-act="edit"]').addEventListener('click', () => {
-      confirm.remove();
-      state.running = false;
-      $('#submit-btn').disabled = false;
-      $('#question').focus();
-    });
-    confirm.querySelector('[data-act="confirm"]').addEventListener('click', async () => {
-      confirm.querySelector('.confirm-row').remove();
-      await runDeliberation(q, intake.restated);
-    });
+    // The council weighs every proposal against the true status quo. When
+    // the submission doesn't describe the current state (or the other
+    // alternatives in play), the Chairperson asks for it before convening.
+    if (intake.needs_context && intake.context_request) {
+      renderContextRequest(q, intake);
+      return;
+    }
+    showConfirm(q, intake.restated);
   } catch (e) {
     thinking.remove();
     handleCouncilError(e);
@@ -426,6 +464,82 @@ async function onSubmit() {
   } finally {
     if (!state.running) $('#submit-btn').disabled = false;
   }
+}
+
+function showConfirm(question, restated) {
+  const confirm = addToThread(el(`
+    <div class="bubble system">
+      <strong>Restated for the record:</strong> ${esc(restated)}
+      <div class="confirm-row">
+        <button class="pln-button" data-act="confirm">Convene the council</button>
+        <button class="ghost-btn" data-act="edit">Edit my question</button>
+      </div>
+    </div>`));
+  confirm.querySelector('[data-act="edit"]').addEventListener('click', () => {
+    confirm.remove();
+    state.running = false;
+    $('#submit-btn').disabled = false;
+    $('#question').focus();
+  });
+  confirm.querySelector('[data-act="confirm"]').addEventListener('click', async () => {
+    confirm.querySelector('.confirm-row').remove();
+    await runDeliberation(question, restated);
+  });
+}
+
+// The Chairperson's pre-deliberation request for the current state of things
+// and any other alternatives being considered. One round only: if the member
+// answers, intake re-reads the combined submission for a better restatement,
+// but a second context request is never issued — assumptions land in the
+// decision table's Notes row instead of an interrogation loop.
+function renderContextRequest(originalQuestion, intake) {
+  const node = addToThread(el(`
+    <div class="bubble system context-request">
+      <strong>Chairperson:</strong> Before the council convenes, it needs the baseline.
+      <div class="md"><p>${esc(intake.context_request)}</p></div>
+      <textarea class="context-answer" rows="3"
+        placeholder="Describe the current state of things, and any other alternatives you're weighing…"
+        aria-label="Current state and alternatives"></textarea>
+      <div class="confirm-row">
+        <button class="pln-button" data-act="send">Send to the council</button>
+        <button class="ghost-btn" data-act="skip">Proceed without it</button>
+      </div>
+    </div>`));
+  const finish = () => node.querySelector('.confirm-row').remove();
+  node.querySelector('[data-act="skip"]').addEventListener('click', () => {
+    finish();
+    showConfirm(originalQuestion, intake.restated);
+  });
+  node.querySelector('[data-act="send"]').addEventListener('click', async () => {
+    const answer = node.querySelector('.context-answer').value.trim();
+    if (!answer) return showConfirm(originalQuestion, intake.restated);
+    finish();
+    node.querySelector('.context-answer').disabled = true;
+    const combined = `${originalQuestion}\n\nCurrent state and alternatives (added at the Chairperson's request):\n${answer}`;
+    if (combined.length > 4000) {
+      // Stay inside the engine's question limit; the original restatement
+      // still stands and the extra context rides along truncated.
+      return showConfirm(combined.slice(0, 4000), intake.restated);
+    }
+    const thinking = addToThread(el(`<div class="bubble system">Re-reading with the added context<span class="thinking-dots"></span></div>`));
+    try {
+      const second = await council({ action: 'intake', question: combined });
+      thinking.remove();
+      // Never re-ask: even if intake still wants more, one round is the cap.
+      showConfirm(combined, second.convene ? second.restated : intake.restated);
+    } catch (e) {
+      thinking.remove();
+      if (e.demo || e.cap) {
+        handleCouncilError(e);
+        state.running = false;
+        $('#submit-btn').disabled = false;
+        return;
+      }
+      // The re-read is a nicety, not a gate — fall back to the original
+      // restatement rather than stranding the member.
+      showConfirm(combined, intake.restated);
+    }
+  });
 }
 
 function handleCouncilError(e) {
@@ -472,7 +586,7 @@ async function runDeliberation(question, restated) {
   const runStageAt = async (idx) => {
     const stage = stages[idx];
     const stageName = stage === 1 ? 'Round 1: blind opinions'
-      : stage === 2 ? 'Round 2: anonymized peer review' : "Chairman's synthesis";
+      : stage === 2 ? 'Round 2: anonymized peer review' : "Chairperson: synthesizing the council's summary & verdict";
     prog.setStage(stage, stageName);
     let seen = 0;
     let failed = null;
@@ -517,7 +631,9 @@ async function runDeliberation(question, restated) {
     if (idx + 1 < stages.length) {
       await runStageAt(idx + 1);
     } else {
-      prog.done(`Deliberation complete · ${mode === 'quick' ? 'Quick council (no peer-review round)' : 'Full council'}`);
+      // Verdict is in — the Chairperson closes the council with the
+      // decision table (stage 4), then follow-ups open.
+      await runDecisionTable(prog, mode);
       state.running = false;
       $('#submit-btn').disabled = false;
       enableFollowup();
@@ -527,16 +643,97 @@ async function runDeliberation(question, restated) {
   await runStageAt(0);
 }
 
+// Stage 4: the Chairperson distills the record into a decision table. A
+// failure here never touches the verdict above it — the member can retry
+// the table on its own.
+async function runDecisionTable(prog, mode) {
+  prog.setStage(4, 'Chairperson: drafting the decision table');
+  try {
+    const { table } = await council({ action: 'table', deliberation_id: state.currentId });
+    renderDecisionTable(table);
+    prog.completeStage(4);
+    prog.done(`Deliberation complete · ${mode === 'quick' ? 'Quick council (no peer-review round)' : 'Full council'} · decision table ready`);
+  } catch (e) {
+    prog.fail('Decision table paused');
+    if (e.demo || e.cap) handleCouncilError(e);
+    renderPaused(
+      'Drafting the decision table failed. The verdict above is unaffected — retry to draft the table.',
+      () => runDecisionTable(prog, mode),
+    );
+  }
+}
+
+// Renders the Chairperson's decision table in the thread with a Word-doc
+// download. The table JSON stays client-side; the download posts it back to
+// the stateless /api/decision-table.docx renderer.
+function renderDecisionTable(table) {
+  const header = ['Decision row', ...table.columns]
+    .map((c, i) => `<th${i === 0 ? ' class="row-label"' : ''}>${esc(c)}</th>`).join('');
+  const rows = table.rows.map((r) => `
+    <tr${/recommendation/i.test(r.label) ? ' class="reco-row"' : ''}>
+      <td class="row-label">${esc(r.label)}</td>
+      ${r.cells.map((c) => `<td>${esc(c)}</td>`).join('')}
+    </tr>`).join('');
+  const node = el(`
+    <div class="decision-table-card">
+      <div class="verdict-band">
+        <h3>Decision table</h3>
+        <button class="pln-button dl-docx" type="button">Download Word doc</button>
+      </div>
+      <div class="dt-meta">
+        <p><strong>${esc(table.title)}</strong></p>
+        <p><strong>Decision question:</strong> ${esc(table.decision_question)}</p>
+        ${table.recommendation_preview ? `<p><strong>Recommendation preview:</strong> ${esc(table.recommendation_preview)}</p>` : ''}
+      </div>
+      <div class="dt-scroll">
+        <table class="decision-table">
+          <thead><tr>${header}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`);
+  node.querySelector('.dl-docx').addEventListener('click', () => downloadTableDocx(table, node.querySelector('.dl-docx')));
+  return addToThread(node);
+}
+
+async function downloadTableDocx(table, btn) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Preparing…';
+  try {
+    const res = await fetch('/api/decision-table.docx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table }),
+    });
+    if (!res.ok) throw new Error(`download failed (${res.status})`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'decision-table.docx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  } catch {
+    inputError('The Word download failed — try the button again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Follow-ups (answered by the Chairman from the stored record)
+// Follow-ups (answered by the Chairperson from the stored record)
 // ---------------------------------------------------------------------------
 
 let followupMode = false;
 function enableFollowup() {
   followupMode = true;
-  $('#question').placeholder = 'Ask the Chairman a follow-up on this verdict — or start a new decision…';
+  $('#question').placeholder = 'Ask the Chairperson a follow-up on this verdict — or start a new decision…';
   $('#submit-btn').textContent = 'Ask';
-  const note = el(`<div class="bubble system">You can now ask the Chairman a follow-up (answered from the record, without re-convening) or clear the thread for a new decision. Saved decision history arrives in v2. <span class="confirm-row"><button class="ghost-btn">New decision</button></span></div>`);
+  const note = el(`<div class="bubble system">You can now ask the Chairperson a follow-up (answered from the record, without re-convening) or clear the thread for a new decision. Saved decision history arrives in v2. <span class="confirm-row"><button class="ghost-btn">New decision</button></span></div>`);
   note.querySelector('button').addEventListener('click', resetForNew);
   addToThread(note);
 }
@@ -552,16 +749,16 @@ function resetForNew() {
 async function onAsk() {
   if (!followupMode || !state.currentId) return onSubmit();
   const q = $('#question').value.trim();
-  if (!q) return inputError('Type a follow-up question for the Chairman.');
+  if (!q) return inputError('Type a follow-up question for the Chairperson.');
   if (q.length > 4000) return inputError('Follow-ups are limited to 4,000 characters.');
   inputError('');
   $('#question').value = '';
   addToThread(el(`<div class="bubble followup-q">${esc(q)}</div>`));
-  const thinking = addToThread(el(`<div class="bubble system">The Chairman is reviewing the record<span class="thinking-dots"></span></div>`));
+  const thinking = addToThread(el(`<div class="bubble system">The Chairperson is reviewing the record<span class="thinking-dots"></span></div>`));
   try {
     const { answer } = await council({ action: 'followup', deliberation_id: state.currentId, question: q });
     thinking.remove();
-    addToThread(el(`<div class="bubble system"><strong>Chairman:</strong><div class="md">${mdLite(answer)}</div></div>`));
+    addToThread(el(`<div class="bubble system"><strong>Chairperson:</strong><div class="md">${mdLite(answer)}</div></div>`));
   } catch (e) {
     thinking.remove();
     handleCouncilError(e);

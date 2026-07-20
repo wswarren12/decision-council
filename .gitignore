@@ -5,6 +5,9 @@ pln-app.config.json
 node_modules/
 coverage/
 
+# Deploy artifacts
+app.zip
+
 # Env & secrets
 .env
 .env.*
@@ -12,6 +15,7 @@ coverage/
 
 # Local tooling state
 .claude/settings.local.json
+.playwright-mcp/
 .vscode/
 .DS_Store
 npm-debug.log
