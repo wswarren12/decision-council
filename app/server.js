@@ -8,9 +8,11 @@
 import express from 'express';
 import multer from 'multer';
 import { resolveSession, isConfigured } from './labos.js';
+import { resolveMember } from './identity.js';
+import { getHistory, getProfile, setPreferences } from './store.js';
 import { extractAll, MAX_TOTAL_BYTES } from './extract.js';
 import { councilHandler, liveEnabled } from './council.js';
-import { validateDecisionTable } from './lib/council-core.mjs';
+import { decisionTableMarkdown, validateDecisionTable } from './lib/council-core.mjs';
 import { decisionTableDocx } from './lib/docx.mjs';
 
 const app = express();
@@ -49,8 +51,35 @@ app.get('/api/session', async (req, res) => {
   res.json(session);
 });
 
+// Member identity rides on the LabOS authToken cookie (v1.8 member-context
+// contract); resolveMember returns null for signed-out visitors and the app
+// keeps working anonymously (no profile/history, global cap only).
+const withMember = async (req, _res, next) => {
+  req.member = await resolveMember(req);
+  next();
+};
+
+// Profile: who am I, my preferences, my remaining daily runs.
+app.get('/api/me', withMember, (req, res) => {
+  if (!req.member) return res.json({ member: null });
+  res.json({ member: req.member, ...getProfile(req.member.uid) });
+});
+
+app.put('/api/me/preferences', withMember, express.json({ limit: '64kb' }), (req, res) => {
+  if (!req.member) return res.status(401).json({ error: 'not_signed_in' });
+  setPreferences(req.member.uid, req.body?.preferences);
+  res.json({ ok: true, ...getProfile(req.member.uid) });
+});
+
+// Last 10 runs (each carries its table JSON, so the stateless .md/.docx
+// renderers can re-download any of them).
+app.get('/api/me/history', withMember, (req, res) => {
+  if (!req.member) return res.status(401).json({ error: 'not_signed_in' });
+  res.json({ history: getHistory(req.member.uid) });
+});
+
 // The deliberation engine (intake / start / stage / table / followup).
-app.post('/api/council', express.json({ limit: '2mb' }), councilHandler);
+app.post('/api/council', express.json({ limit: '2mb' }), withMember, councilHandler);
 
 // Word-document render of a Chairperson decision table. Stateless by design:
 // the SPA posts back the table JSON it received from the `table` action (or
@@ -65,6 +94,18 @@ app.post('/api/decision-table.docx', express.json({ limit: '256kb' }), (req, res
     'Content-Disposition': 'attachment; filename="decision-table.docx"',
   });
   res.send(decisionTableDocx(table));
+});
+
+// Markdown render of a decision table — same stateless contract as the docx
+// endpoint: the SPA posts back the validated table JSON it already holds.
+app.post('/api/decision-table.md', express.json({ limit: '256kb' }), (req, res) => {
+  const table = validateDecisionTable(req.body?.table);
+  if (!table) return res.status(400).json({ error: 'invalid_table' });
+  res.set({
+    'Content-Type': 'text/markdown; charset=utf-8',
+    'Content-Disposition': 'attachment; filename="decision-table.md"',
+  });
+  res.send(decisionTableMarkdown(table));
 });
 
 // Attachment text extraction (F-4). Files are transient — held in memory for

@@ -11,8 +11,10 @@ import { fileURLToPath } from 'node:url';
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 // tests/ is excluded from the deploy zip (.dockerignore), and this file
-// necessarily contains the very literals it scans for.
-const SKIP = new Set(['node_modules', 'coverage', '.DS_Store', 'tests']);
+// necessarily contains the very literals it scans for. local.env is the
+// local-dev key file and data/ the runtime profile store — both
+// dockerignored, never shipped.
+const SKIP = new Set(['node_modules', 'coverage', '.DS_Store', 'tests', 'local.env', 'data']);
 // Built by concatenation so this scanner never matches itself elsewhere.
 const ANTHROPIC_PREFIX = 'sk-' + 'ant-';
 
@@ -58,5 +60,6 @@ describe('no secret material in the shippable app', () => {
     const ignore = readFileSync(join(APP, '.dockerignore'), 'utf8');
     expect(ignore).toMatch(/^node_modules$/m);
     expect(ignore).toMatch(/^\.env$/m);
+    expect(ignore).toMatch(/^local\.env$/m);
   });
 });

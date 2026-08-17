@@ -45,7 +45,7 @@ describe('PLN deploy contract', () => {
     const res = await fetch(`${BASE}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain('Decision Council');
+    expect(html).toContain('Decisions');
   });
 
   it('GET / carries the legal/accounting/financial advice disclaimer', async () => {

@@ -26,7 +26,9 @@ import {
   buildDecisionTablePrompt,
   buildFollowupPrompt,
   buildIntakePrompt,
+  buildResearchPrompt,
   buildPreamble,
+  buildPreferencesBlock,
   buildStage1Prompt,
   buildStage2Prompt,
   confidenceSpread,
@@ -40,11 +42,14 @@ import {
   validateDecisionTable,
 } from './lib/council-core.mjs';
 import { PERSONAS, PERSONA_KEYS } from './lib/personas.mjs';
+import { addHistory, getPreferences, reserveRun } from './store.js';
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
-const COUNCIL_MODEL = process.env.COUNCIL_MODEL || 'claude-sonnet-4-6';
+const COUNCIL_MODEL = process.env.COUNCIL_MODEL || 'claude-opus-5';
 const INTAKE_MODEL = process.env.INTAKE_MODEL || 'claude-haiku-4-5';
+// Research pass compiles web findings — heavy on search, light on judgment.
+const RESEARCH_MODEL = process.env.RESEARCH_MODEL || 'claude-sonnet-4-6';
 const DAILY_CALL_CAP = Number(process.env.DAILY_CALL_CAP || '500');
 
 export function liveEnabled() {
@@ -59,6 +64,14 @@ const PACK_PATH = join(dirname(fileURLToPath(import.meta.url)), 'context', 'pl-c
 const PACK_BODY = readFileSync(PACK_PATH, 'utf8');
 const PACK_VERSION = (PACK_BODY.match(/version\s+([\w.-]+)/i) || [])[1] || 'unversioned';
 const PREAMBLE = buildPreamble(PACK_BODY, PACK_VERSION);
+
+// Member preferences ride into every prompt of their deliberation — fenced
+// and framed as data (buildPreferencesBlock) so they can never override the
+// house rules or change the task.
+function preambleFor(delib) {
+  const block = buildPreferencesBlock(delib.preferences);
+  return block ? `${PREAMBLE}\n\n${block}` : PREAMBLE;
+}
 
 // ---------------------------------------------------------------------------
 // In-memory store
@@ -86,7 +99,7 @@ function reserveCalls(calls) {
 // Anthropic (raw Messages API; key comes from the LabOS secrets flow)
 // ---------------------------------------------------------------------------
 
-async function anthropic(prompt, { model = COUNCIL_MODEL, maxTokens = 1600 } = {}) {
+async function anthropic(prompt, { model = COUNCIL_MODEL, maxTokens = 1600, tools = undefined } = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     const err = new Error('no_api_key');
@@ -104,6 +117,7 @@ async function anthropic(prompt, { model = COUNCIL_MODEL, maxTokens = 1600 } = {
       model,
       max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }],
+      ...(tools ? { tools } : {}),
     }),
   });
   if (res.status === 401) {
@@ -153,11 +167,15 @@ async function handleIntake(body) {
   };
 }
 
-function handleStart(body) {
+function handleStart(body, member) {
   const question = String(body.question ?? '').trim();
   const restated = String(body.restated ?? '').trim();
   const mode = body.mode === 'quick' ? 'quick' : 'full';
   if (!question || question.length > 4000) throw new Error('invalid_question');
+
+  // Per-member daily cap (5 councils or tables). Anonymous visitors stay on
+  // the global DAILY_CALL_CAP only.
+  if (member) reserveRun(member.uid);
 
   const id = randomUUID();
   // Stage 0: randomized persona->letter mapping, server-side only (AC-1.4) —
@@ -180,6 +198,11 @@ function handleStart(body) {
     question,
     restated,
     mode,
+    // 'table' = the decision-table-only path (silent council); 'council' =
+    // the full visible deliberation. Recorded in the member's history.
+    flow: body.flow === 'table' ? 'table' : 'council',
+    owner: member?.uid ?? null,
+    preferences: member ? getPreferences(member.uid) : '',
     status: 'created',
     mapping,
     attachmentsText,
@@ -230,6 +253,30 @@ async function handleStage(body, res) {
     delib.status = `stage${stage}_running`;
     send({ type: 'stage_started', stage });
 
+    // Research pass (decision-table flow only): compile web research BEFORE
+    // the advisors deliberate — referenced products (features / pricing /
+    // reviews / market position) plus academic papers and reputable reporting
+    // on the decision's subject matter. Cached like any round; a failure
+    // degrades to no research rather than blocking the run.
+    if (stage === 1 && delib.flow === 'table' && !delib.rounds.has('0:research')) {
+      send({ type: 'research_started', stage: 1 });
+      try {
+        reserveCalls(1);
+        const raw = await withRetry(() => anthropic(buildResearchPrompt(delib.question), {
+          model: RESEARCH_MODEL,
+          maxTokens: 2500,
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+        }));
+        const brief = /^\s*NO_RESEARCH\s*$/.test(raw.trim()) ? '' : raw.trim();
+        delib.rounds.set('0:research', brief);
+        send({ type: 'research_done', stage: 1, found: Boolean(brief) });
+      } catch (e) {
+        if (e.status === 429 || e.status === 503) throw e; // real stops still stop
+        delib.rounds.set('0:research', ''); // degrade: deliberate without it
+        send({ type: 'research_done', stage: 1, found: false });
+      }
+    }
+
     if (stage === 1 || stage === 2) {
       const done = existingRounds(delib, stage);
       const todo = LETTERS.filter((l) => !(l in done));
@@ -246,7 +293,7 @@ async function handleStage(body, res) {
         const charter = PERSONAS[delib.mapping[letter]];
         const prompt = stage === 1
           ? buildStage1Prompt({
-            preamble: PREAMBLE,
+            preamble: preambleFor(delib),
             charter,
             question: delib.question,
             restated: delib.restated || delib.question,
@@ -255,9 +302,10 @@ async function handleStage(body, res) {
             // identity-less, so no member history exists to summarize.
             historySummary: '',
             isOutsider: delib.mapping[letter] === 'outsider',
+            researchText: delib.rounds.get('0:research') || '',
           })
           : buildStage2Prompt({
-            preamble: PREAMBLE,
+            preamble: preambleFor(delib),
             charter,
             ownLetter: letter,
             ownOpinion: round1[letter],
@@ -291,7 +339,7 @@ async function handleStage(body, res) {
         reserveCalls(1);
         verdictRaw = await withRetry(() =>
           anthropic(buildChairmanPrompt({
-            preamble: PREAMBLE,
+            preamble: preambleFor(delib),
             restated: delib.restated || delib.question,
             question: delib.question,
             opinions: LETTERS.map((l) => ({ letter: l, text: opinions[l] })),
@@ -353,12 +401,13 @@ async function handleTable(body) {
   reserveCalls(1);
   const table = await withRetry(async () => {
     const raw = await anthropic(buildDecisionTablePrompt({
-      preamble: PREAMBLE,
+      preamble: preambleFor(delib),
       restated: delib.restated || delib.question,
       question: delib.question,
       opinions: LETTERS.map((l) => ({ letter: l, text: opinions[l] })).filter((o) => o.text),
       verdict: stripMemoryBlock(verdictRaw),
       mode: delib.mode,
+      researchText: delib.rounds.get('0:research') || '',
     }), { maxTokens: 3000 });
     const parsed = validateDecisionTable(extractJson(raw));
     if (!parsed) {
@@ -379,8 +428,20 @@ async function handleTable(body) {
       label: sanitizeOpinion(r.label),
       cells: r.cells.map(sanitizeOpinion),
     })),
+    notes: (table.notes ?? []).map(sanitizeOpinion),
   };
   delib.rounds.set('4:table', JSON.stringify(clean));
+  // Every completed run ends in a table — that's the history entry the
+  // member can re-download later (.md/.docx via the stateless renderers).
+  if (delib.owner) {
+    addHistory(delib.owner, {
+      id,
+      kind: delib.flow,
+      title: clean.title,
+      created_at: new Date().toISOString(),
+      table: clean,
+    });
+  }
   return { table: clean };
 }
 
@@ -402,7 +463,7 @@ async function handleFollowup(body) {
   reserveCalls(1);
   const answerRaw = await withRetry(() =>
     anthropic(buildFollowupPrompt({
-      preamble: PREAMBLE,
+      preamble: preambleFor(delib),
       restated: delib.restated || delib.question,
       verdict: stripMemoryBlock(verdictRaw),
       rounds,
@@ -423,7 +484,7 @@ export async function councilHandler(req, res) {
       case 'intake':
         return res.json(await handleIntake(body));
       case 'start':
-        return res.json(handleStart(body));
+        return res.json(handleStart(body, req.member));
       case 'stage':
         return await handleStage(body, res);
       case 'table':
@@ -442,6 +503,9 @@ export async function councilHandler(req, res) {
     }
     if (msg === 'daily_cap_reached') {
       return res.status(429).json({ error: msg, cap: DAILY_CALL_CAP });
+    }
+    if (msg === 'user_daily_cap') {
+      return res.status(429).json({ error: msg, userCap: true });
     }
     return res.status(status >= 400 && status < 600 ? status : 500).json({ error: msg });
   }

@@ -2,7 +2,11 @@ node_modules
 npm-debug.log
 .env
 .env.*
+local.env
 *.local
 .DS_Store
 tests
 coverage
+
+# Per-member profile store (local runtime data)
+data

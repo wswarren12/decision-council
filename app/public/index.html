@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Decision Council</title>
+  <title>Decisions</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -21,18 +21,20 @@
       <header class="masthead">
         <div class="masthead-mark" aria-hidden="true">DC</div>
         <div>
-          <h1>Decision Council</h1>
-          <p class="masthead-sub">Five independent advisors. One argument-weighted verdict.</p>
+          <h1>Decisions</h1>
+          <p class="masthead-sub">Consult an AI Decision Council or generate a Decision Table</p>
         </div>
         <span class="session-chip" id="session-chip" hidden></span>
+        <button class="ghost-btn profile-btn" id="profile-btn" type="button" hidden>Profile</button>
       </header>
 
       <div id="banner" class="banner" hidden></div>
 
       <section id="thread" class="thread" aria-live="polite"></section>
 
-      <!-- Composer -->
-      <footer class="composer" id="composer">
+      <!-- Composer (revealed once a mode is chosen; documents can also be
+           dragged & dropped anywhere on it) -->
+      <footer class="composer" id="composer" hidden>
         <div id="attachment-chips" class="chips"></div>
         <div class="composer-row">
           <textarea id="question" rows="2" maxlength="4200"

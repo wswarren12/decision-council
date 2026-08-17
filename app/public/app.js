@@ -14,10 +14,13 @@ const thread = $('#thread');
 const state = {
   config: null,
   session: 'live',          // 'live' | 'demo'
+  me: null,                  // {member:{uid,name}, preferences, usage} | null
+  path: null,                // null (choosing) | 'council' | 'table'
   mode: 'full',
   attachments: [],           // {filename, bytes, text, chars, words, warning}
   running: false,
   currentId: null,           // deliberation being run (session-only)
+  dt: null,                  // decision-table-only flow: {step, answers[]}
   demo: null,                // loaded fixture
 };
 
@@ -82,7 +85,7 @@ async function boot() {
     state.config = await (await fetch('/api/config')).json();
     if (state.config.live) {
       state.session = 'live';
-      setSessionChip('Session-only · saved history arrives in v2');
+      setSessionChip('Live');
     } else {
       // The container reports no API key configured — demo mode up front.
       state.session = 'demo';
@@ -94,7 +97,173 @@ async function boot() {
     setSessionChip('Demo mode');
     setBanner('Could not load app configuration. The example deliberation below still works.');
   }
+  // LabOS identity: signed-in members get a profile (preferences, history,
+  // daily runs). Signed-out visitors keep the full anonymous experience.
+  try {
+    const me = await (await fetch('/api/me')).json();
+    if (me.member) {
+      state.me = me;
+      const btn = $('#profile-btn');
+      btn.textContent = me.member.name;
+      btn.hidden = false;
+    }
+  } catch { /* signed out */ }
+  renderChooser();
+}
+
+// ---------------------------------------------------------------------------
+// Mode chooser — the first screen: full council vs. decision table only
+// ---------------------------------------------------------------------------
+
+function renderChooser() {
+  followupMode = false;
+  state.path = null;
+  state.dt = null;
+  state.currentId = null;
+  clearAttachments();
+  const composer = $('#composer');
+  composer.hidden = true;
+  composer.classList.remove('table-mode');
+  thread.innerHTML = '';
+  const node = el(`
+    <div class="empty-state chooser">
+      <div class="glyphs">${LETTERS.map((l) => `<span class="letter-avatar">${l}</span>`).join('')}</div>
+      <h2>How do you want to work this decision?</h2>
+      <div class="chooser-cards">
+        <button type="button" class="chooser-card" data-path="council">
+          <h3>Consult AI Council</h3>
+          <p>Five independent AI advisors deliberate your decision — blind opinions,
+          anonymized peer review, and a Chairperson's verdict you can question with
+          follow-ups. Every council ends with a downloadable decision table.</p>
+        </button>
+        <button type="button" class="chooser-card" data-path="table">
+          <h3>Generate Decision Table</h3>
+          <p>Answer three quick questions and drop in any supporting documents.
+          A silent council pressure-tests your options behind the scenes — you see
+          only the finished decision table (.md and .docx).</p>
+        </button>
+      </div>
+    </div>`);
+  addToThread(node);
+  node.querySelector('[data-path="council"]').addEventListener('click', chooseCouncil);
+  node.querySelector('[data-path="table"]').addEventListener('click', chooseTable);
+}
+
+// ---------------------------------------------------------------------------
+// Profile: preferences, daily usage, last-10 history with re-downloads
+// ---------------------------------------------------------------------------
+
+async function renderProfile() {
+  if (!state.me?.member) return;
+  followupMode = false;
+  state.path = null;
+  state.dt = null;
+  const composer = $('#composer');
+  composer.hidden = true;
+  thread.innerHTML = '';
+
+  const { member, preferences, usage } = state.me;
+  const node = addToThread(el(`
+    <div class="profile">
+      <div class="bubble system">
+        <strong>${esc(member.name)}</strong> · ${usage.cap - usage.used} of ${usage.cap} runs left today
+        <span class="confirm-row"><button class="ghost-btn" data-act="back" type="button">← Back</button></span>
+      </div>
+      <div class="bubble system">
+        <strong>Preferences</strong>
+        <p class="profile-hint">Standing instructions the council and decision tables take into account — e.g. “we're a 6-person team, favor low-ops options, always weigh privacy impact”.</p>
+        <textarea class="prefs-input" rows="4" maxlength="2000" placeholder="Anything the advisors should always consider…">${esc(preferences || '')}</textarea>
+        <span class="confirm-row">
+          <button class="pln-button" data-act="save" type="button">Save preferences</button>
+          <span class="profile-saved" data-act="saved" hidden>Saved ✓</span>
+        </span>
+      </div>
+      <div class="bubble system profile-history">
+        <strong>History</strong>
+        <p class="profile-hint">Your last 10 councils and tables — re-download any output.</p>
+        <div data-act="list">Loading…</div>
+      </div>
+    </div>`));
+
+  node.querySelector('[data-act="back"]').addEventListener('click', renderChooser);
+  node.querySelector('[data-act="save"]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/me/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferences: node.querySelector('.prefs-input').value }),
+      });
+      if (!res.ok) throw new Error('save failed');
+      state.me = { member, ...(await res.json()), };
+      state.me.member = member;
+      const saved = node.querySelector('[data-act="saved"]');
+      saved.hidden = false;
+      setTimeout(() => { saved.hidden = true; }, 2000);
+    } catch {
+      setBanner('Saving preferences failed — try again.');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  const list = node.querySelector('[data-act="list"]');
+  try {
+    const { history } = await (await fetch('/api/me/history')).json();
+    if (!history.length) {
+      list.textContent = 'No runs yet — your completed councils and tables will appear here.';
+      return;
+    }
+    list.innerHTML = '';
+    for (const h of history) {
+      const when = new Date(h.created_at).toLocaleString();
+      const row = el(`
+        <div class="history-row">
+          <span class="history-kind">${h.kind === 'table' ? '▦ Table' : '⚖ Council'}</span>
+          <span class="history-title"><strong>${esc(h.title)}</strong><br><small>${esc(when)}</small></span>
+          <span class="history-dl">
+            <button class="ghost-btn" data-fmt="md" type="button">.md</button>
+            <button class="ghost-btn" data-fmt="docx" type="button">.docx</button>
+          </span>
+        </div>`);
+      for (const btn of row.querySelectorAll('[data-fmt]')) {
+        btn.addEventListener('click', () => downloadTable(h.table, btn, btn.dataset.fmt));
+      }
+      list.appendChild(row);
+    }
+  } catch {
+    list.textContent = 'Could not load history — try again later.';
+  }
+}
+
+function chooseCouncil() {
+  state.path = 'council';
+  const composer = $('#composer');
+  composer.hidden = false;
+  composer.classList.remove('table-mode');
+  $('#question').placeholder = 'Bring the council a judgment call — take the partnership, kill the feature, restructure the deal…';
+  $('#submit-btn').textContent = 'Convene';
   renderEmptyState();
+}
+
+function chooseTable() {
+  if (state.session === 'demo') {
+    setBanner('The decision-table generator needs the live council, which is unavailable right now (no API key configured). The example deliberation still shows the full experience.',
+      [{ label: 'Play example', onClick: () => { chooseCouncil(); playDemo(); } }]);
+    return;
+  }
+  state.path = 'table';
+  state.dt = { step: 0, answers: [] };
+  const composer = $('#composer');
+  composer.hidden = false;
+  composer.classList.add('table-mode');
+  $('#submit-btn').textContent = 'Send';
+  setBanner('');
+  thread.innerHTML = '';
+  addToThread(el(`<div class="bubble system">Three questions, then a decision table. A silent council reviews your options before the table is drafted — only the table is shown. <span class="confirm-row"><button class="ghost-btn" type="button">← Different mode</button></span></div>`))
+    .querySelector('button').addEventListener('click', renderChooser);
+  askDtQuestion(0);
 }
 
 function setSessionChip(label) {
@@ -130,7 +299,8 @@ async function council(body) {
     try { detail = await res.json(); } catch { /* ignore */ }
     const err = new Error(detail.error || `request failed (${res.status})`);
     err.demo = Boolean(detail.demo);
-    err.cap = res.status === 429;
+    err.userCap = Boolean(detail.userCap);
+    err.cap = res.status === 429 && !err.userCap;
     throw err;
   }
   return res.json();
@@ -185,9 +355,11 @@ function renderEmptyState() {
       advisors are only ever A through E.</p>
       <button class="pln-button" id="play-demo">Play an example deliberation</button>
       ${state.session === 'demo' ? '' : '<p style="margin-top:14px">…or type your decision below to convene a live council.</p>'}
+      <p><button class="ghost-btn" id="back-chooser" type="button">← Different mode</button></p>
     </div>`);
   addToThread(node);
   node.querySelector('#play-demo').addEventListener('click', playDemo);
+  node.querySelector('#back-chooser').addEventListener('click', renderChooser);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -543,7 +715,11 @@ function renderContextRequest(originalQuestion, intake) {
 }
 
 function handleCouncilError(e) {
-  if (e.demo) {
+  if (e.userCap) {
+    setBanner('You’ve used your 5 councils or decision tables for today — your limit resets at midnight UTC. Past outputs stay downloadable from your profile.');
+    state.running = false;
+    $('#submit-btn').disabled = false;
+  } else if (e.demo) {
     setBanner('The live council is unavailable right now (no API key configured). The example deliberation still shows the full experience.',
       [{ label: 'Play example', onClick: playDemo }]);
   } else if (e.cap) {
@@ -667,9 +843,17 @@ async function runDecisionTable(prog, mode) {
 // download. The table JSON stays client-side; the download posts it back to
 // the stateless /api/decision-table.docx renderer.
 function renderDecisionTable(table) {
+  // Notes render BELOW the grid. Older payloads (demo fixture) still carry a
+  // notes row — pull it out here so both shapes display the same way.
+  const notes = [...(table.notes ?? [])];
+  const gridRows = table.rows.filter((r) => {
+    if (!/notes|open questions/i.test(r.label)) return true;
+    for (const c of r.cells) if (c && c !== '—' && !notes.includes(c)) notes.push(c);
+    return false;
+  });
   const header = ['Decision row', ...table.columns]
     .map((c, i) => `<th${i === 0 ? ' class="row-label"' : ''}>${esc(c)}</th>`).join('');
-  const rows = table.rows.map((r) => `
+  const rows = gridRows.map((r) => `
     <tr${/recommendation/i.test(r.label) ? ' class="reco-row"' : ''}>
       <td class="row-label">${esc(r.label)}</td>
       ${r.cells.map((c) => `<td>${esc(c)}</td>`).join('')}
@@ -678,11 +862,15 @@ function renderDecisionTable(table) {
     <div class="decision-table-card">
       <div class="verdict-band">
         <h3>Decision table</h3>
-        <button class="pln-button dl-docx" type="button">Download Word doc</button>
+        <span class="dl-group">
+          <button class="ghost-btn dl-md" type="button">Download Markdown</button>
+          <button class="pln-button dl-docx" type="button">Download Word doc</button>
+        </span>
       </div>
       <div class="dt-meta">
         <p><strong>${esc(table.title)}</strong></p>
         <p><strong>Decision question:</strong> ${esc(table.decision_question)}</p>
+        ${table.situation ? `<p><strong>Situation:</strong> ${esc(table.situation)}</p>` : ''}
         ${table.recommendation_preview ? `<p><strong>Recommendation preview:</strong> ${esc(table.recommendation_preview)}</p>` : ''}
       </div>
       <div class="dt-scroll">
@@ -691,17 +879,21 @@ function renderDecisionTable(table) {
           <tbody>${rows}</tbody>
         </table>
       </div>
+      ${notes.length ? `<div class="dt-notes"><h4>Notes / open questions</h4><ul>${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></div>` : ''}
     </div>`);
-  node.querySelector('.dl-docx').addEventListener('click', () => downloadTableDocx(table, node.querySelector('.dl-docx')));
+  node.querySelector('.dl-docx').addEventListener('click', () => downloadTable(table, node.querySelector('.dl-docx'), 'docx'));
+  node.querySelector('.dl-md').addEventListener('click', () => downloadTable(table, node.querySelector('.dl-md'), 'md'));
   return addToThread(node);
 }
 
-async function downloadTableDocx(table, btn) {
+// Stateless downloads: the table JSON is posted back to the matching server
+// renderer (/api/decision-table.docx or .md).
+async function downloadTable(table, btn, format) {
   const original = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Preparing…';
   try {
-    const res = await fetch('/api/decision-table.docx', {
+    const res = await fetch(`/api/decision-table.${format}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ table }),
@@ -711,13 +903,13 @@ async function downloadTableDocx(table, btn) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'decision-table.docx';
+    a.download = `decision-table.${format}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   } catch {
-    inputError('The Word download failed — try the button again.');
+    inputError('The download failed — try the button again.');
   } finally {
     btn.disabled = false;
     btn.textContent = original;
@@ -733,17 +925,173 @@ function enableFollowup() {
   followupMode = true;
   $('#question').placeholder = 'Ask the Chairperson a follow-up on this verdict — or start a new decision…';
   $('#submit-btn').textContent = 'Ask';
-  const note = el(`<div class="bubble system">You can now ask the Chairperson a follow-up (answered from the record, without re-convening) or clear the thread for a new decision. Saved decision history arrives in v2. <span class="confirm-row"><button class="ghost-btn">New decision</button></span></div>`);
+  const note = el(`<div class="bubble system">You can now ask the Chairperson a follow-up (answered from the record, without re-convening) or clear the thread for a new decision.${state.me ? ' The decision table is saved to your profile history.' : ''} <span class="confirm-row"><button class="ghost-btn">New decision</button></span></div>`);
   note.querySelector('button').addEventListener('click', resetForNew);
   addToThread(note);
 }
 
 function resetForNew() {
-  followupMode = false;
-  state.currentId = null;
-  $('#question').placeholder = 'Bring the council a judgment call — take the partnership, kill the feature, restructure the deal…';
-  $('#submit-btn').textContent = 'Convene';
-  renderEmptyState();
+  renderChooser();
+}
+
+// ---------------------------------------------------------------------------
+// Decision-table-only flow: three scripted questions → confirm → silent
+// council (quick protocol, nothing rendered) → the table + .md/.docx
+// ---------------------------------------------------------------------------
+
+const DT_QUESTIONS = [
+  "What's the goal?",
+  'What are the options you’re deciding between?',
+  'Any other information or background that would be helpful? (note: add any supporting documents below)',
+];
+const DT_PLACEHOLDERS = [
+  'Describe the goal this decision serves…',
+  'List the options — the real current path counts as one…',
+  'Constraints, history, context — or leave blank and hit Send…',
+];
+
+function askDtQuestion(step) {
+  state.dt.step = step;
+  addToThread(el(`<div class="bubble system"><strong>${esc(DT_QUESTIONS[step])}</strong></div>`));
+  const q = $('#question');
+  q.placeholder = DT_PLACEHOLDERS[step];
+  q.focus();
+}
+
+function onDtSubmit() {
+  if (state.running || !state.dt) return;
+  const q = $('#question');
+  const text = q.value.trim();
+  const step = state.dt.step;
+  if (step > 2) return; // questions done — waiting on the confirm card
+  if (!text && step === 0) return inputError('Describe the goal first.');
+  if (!text && step === 1) return inputError('List the options you’re deciding between.');
+  if (text.length > 3000) return inputError('Keep each answer under 3,000 characters — attach the detail as a document instead.');
+  inputError('');
+  q.value = '';
+  addToThread(el(`<div class="bubble user">${text ? esc(text) : '<em>Nothing to add.</em>'}</div>`));
+  state.dt.answers[step] = text;
+  if (step < 2) return askDtQuestion(step + 1);
+  showDtConfirm();
+}
+
+function showDtConfirm() {
+  state.dt.step = 3; // past the questions; submits are ignored until confirm/restart
+  $('#question').placeholder = 'Confirm below — you can still attach documents first…';
+  const [goal, options, background] = state.dt.answers;
+  const node = addToThread(el(`
+    <div class="bubble system">
+      <strong>Ready to generate the decision table?</strong>
+      <div class="md">
+        <p><strong>Goal:</strong> ${esc(goal)}</p>
+        <p><strong>Options:</strong> ${esc(options)}</p>
+        <p><strong>Background:</strong> ${esc(background || 'none provided')}</p>
+        <p><strong>Supporting documents:</strong> ${state.attachments.filter((a) => a.text).length || 'none'} — add more below before confirming if needed.</p>
+      </div>
+      <div class="confirm-row">
+        <button class="pln-button" data-act="go">Generate decision table</button>
+        <button class="ghost-btn" data-act="restart">Start over</button>
+      </div>
+    </div>`));
+  node.querySelector('[data-act="restart"]').addEventListener('click', () => { clearAttachments(); chooseTable(); });
+  node.querySelector('[data-act="go"]').addEventListener('click', async () => {
+    node.querySelector('.confirm-row').remove();
+    await runTableOnly();
+  });
+}
+
+function composeDtQuestion() {
+  const [goal, options, background] = state.dt.answers;
+  const parts = [`Goal: ${goal}`, `Options under consideration: ${options}`];
+  if (background) parts.push(`Additional background: ${background}`);
+  // Engine question cap is 4,000 chars; overflow rides in as attachments.
+  return parts.join('\n\n').slice(0, 4000);
+}
+
+async function runTableOnly() {
+  if (state.running) return;
+  state.running = true;
+  $('#submit-btn').disabled = true;
+  let started;
+  try {
+    started = await council({
+      action: 'start',
+      question: composeDtQuestion(),
+      restated: `Choose among the stated options to achieve the goal: ${state.dt.answers[0]}`.slice(0, 500),
+      mode: 'quick', // silent pass: blind opinions + chair verdict, no peer-review round
+      flow: 'table', // recorded as a decision table in the member's history
+      attachments: state.attachments.filter((a) => a.text),
+    });
+  } catch (e) {
+    handleCouncilError(e);
+    state.running = false;
+    $('#submit-btn').disabled = false;
+    return;
+  }
+  state.currentId = started.deliberation_id;
+  if (started.attachment_note) addToThread(el(`<div class="bubble system">${esc(started.attachment_note)}</div>`));
+  clearAttachments();
+
+  const prog = renderStageProgress('quick');
+  const silentStages = [
+    { stage: 1, label: 'Silent council: five advisors weighing the options' },
+    { stage: 3, label: 'Silent council: chair synthesizing the deliberation' },
+  ];
+  const runAt = async (idx) => {
+    const { stage, label } = silentStages[idx];
+    prog.setStage(stage, label);
+    let seen = 0;
+    let failed = null;
+    try {
+      await councilStage(state.currentId, stage, (ev) => {
+        // Silent by design: rounds and the verdict are never rendered here.
+        if (ev.type === 'research_started') prog.tick(stage, 'Researching · referenced products, papers & reputable reporting');
+        else if (ev.type === 'research_done') prog.tick(stage, ev.found ? `${label} · research in hand` : label);
+        else if (ev.type === 'advisor_done') { seen += 1; prog.tick(stage, `${label} · ${seen}/5 in`); }
+        else if (ev.type === 'stage_failed') failed = ev;
+      });
+    } catch (e) {
+      failed = { error: e.message, demo: e.demo, cap: e.cap };
+    }
+    if (failed) {
+      prog.fail(`${label} paused`);
+      if (failed.demo || failed.cap) handleCouncilError({ demo: failed.demo, cap: failed.cap, message: failed.error });
+      renderPaused('A silent-council call failed. Completed work is saved; retrying only re-runs what’s missing.', () => runAt(idx));
+      return;
+    }
+    prog.completeStage(stage);
+    if (idx + 1 < silentStages.length) return runAt(idx + 1);
+    await finishTableOnly(prog);
+  };
+  await runAt(0);
+}
+
+async function finishTableOnly(prog) {
+  prog.setStage(4, 'Drafting the decision table');
+  try {
+    const { table } = await council({ action: 'table', deliberation_id: state.currentId });
+    renderDecisionTable(table);
+    prog.completeStage(4);
+    prog.done('Decision table ready — download it as Markdown or Word.');
+    state.running = false;
+    $('#submit-btn').disabled = false;
+    const note = el(`
+      <div class="bubble system">Done.
+        <span class="confirm-row">
+          <button class="pln-button" data-act="new" type="button">Generate New Decision Table</button>
+          <button class="ghost-btn" data-act="md" type="button">Download Markdown</button>
+          <button class="ghost-btn" data-act="docx" type="button">Download Docx</button>
+        </span>
+      </div>`);
+    note.querySelector('[data-act="new"]').addEventListener('click', chooseTable);
+    note.querySelector('[data-act="md"]').addEventListener('click', (e) => downloadTable(table, e.currentTarget, 'md'));
+    note.querySelector('[data-act="docx"]').addEventListener('click', (e) => downloadTable(table, e.currentTarget, 'docx'));
+    addToThread(note);
+  } catch (e) {
+    prog.fail('Decision table paused');
+    if (e.demo || e.cap) handleCouncilError(e);
+    renderPaused('Drafting the decision table failed — retry to draft it again.', () => finishTableOnly(prog));
+  }
 }
 
 async function onAsk() {
@@ -836,15 +1184,35 @@ function setModeUI(mode) {
   });
 }
 
+function routeSubmit() {
+  if (state.path === 'table') return onDtSubmit();
+  return followupMode ? onAsk() : onSubmit();
+}
+
 document.querySelectorAll('.mode-opt').forEach((b) =>
   b.addEventListener('click', () => setModeUI(b.dataset.mode)));
-$('#submit-btn').addEventListener('click', () => (followupMode ? onAsk() : onSubmit()));
+$('#submit-btn').addEventListener('click', routeSubmit);
 $('#question').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) (followupMode ? onAsk() : onSubmit());
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) routeSubmit();
 });
 $('#file-input').addEventListener('change', (e) => {
   onFilesChosen(e.target.files);
   e.target.value = '';
 });
+$('#profile-btn').addEventListener('click', renderProfile);
+
+// Drag & drop documents onto the composer (same pipeline as the attach button).
+{
+  const composer = $('#composer');
+  for (const t of ['dragover', 'dragenter']) {
+    composer.addEventListener(t, (e) => { e.preventDefault(); composer.classList.add('dragover'); });
+  }
+  composer.addEventListener('dragleave', (e) => { e.preventDefault(); composer.classList.remove('dragover'); });
+  composer.addEventListener('drop', (e) => {
+    e.preventDefault();
+    composer.classList.remove('dragover');
+    if (e.dataTransfer?.files?.length) onFilesChosen(e.dataTransfer.files);
+  });
+}
 
 boot();

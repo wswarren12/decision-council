@@ -5,6 +5,7 @@
   "description": "PLN Decision Council \u2014 five-advisor AI deliberation for PL Network members (self-contained; Anthropic key via LabOS secrets flow)",
   "scripts": {
     "start": "node server.js",
+    "local": "node --env-file=local.env server.js",
     "test": "vitest run"
   },
   "dependencies": {
