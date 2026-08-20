@@ -238,8 +238,8 @@ describe('markdown render', () => {
 });
 
 describe('docx render', () => {
-  it('escXml neutralizes markup in model text', () => {
-    expect(escXml('<w:evil> & "quotes"')).toBe('&lt;w:evil&gt; &amp; &quot;quotes&quot;');
+  it('escXml neutralizes markup and removes characters forbidden by XML 1.0', () => {
+    expect(escXml('<w:evil> & "quotes"\u0000\u000B')).toBe('&lt;w:evil&gt; &amp; &quot;quotes&quot;');
   });
 
   it('crc32 matches the reference vector', () => {

@@ -50,6 +50,8 @@ const COUNCIL_MODEL = process.env.COUNCIL_MODEL || 'claude-opus-5';
 const INTAKE_MODEL = process.env.INTAKE_MODEL || 'claude-haiku-4-5';
 // Research pass compiles web findings — heavy on search, light on judgment.
 const RESEARCH_MODEL = process.env.RESEARCH_MODEL || 'claude-sonnet-4-6';
+const TABLE_MODEL = process.env.TABLE_MODEL || 'claude-sonnet-4-6';
+const ANTHROPIC_TIMEOUT_MS = Math.max(1000, Number(process.env.ANTHROPIC_TIMEOUT_MS) || 180_000);
 const DAILY_CALL_CAP = Number(process.env.DAILY_CALL_CAP || '500');
 
 export function liveEnabled() {
@@ -99,7 +101,12 @@ function reserveCalls(calls) {
 // Anthropic (raw Messages API; key comes from the LabOS secrets flow)
 // ---------------------------------------------------------------------------
 
-async function anthropic(prompt, { model = COUNCIL_MODEL, maxTokens = 1600, tools = undefined } = {}) {
+export async function anthropic(prompt, {
+  model = COUNCIL_MODEL,
+  maxTokens = 1600,
+  tools = undefined,
+  timeoutMs = ANTHROPIC_TIMEOUT_MS,
+} = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     const err = new Error('no_api_key');
@@ -119,6 +126,10 @@ async function anthropic(prompt, { model = COUNCIL_MODEL, maxTokens = 1600, tool
       messages: [{ role: 'user', content: prompt }],
       ...(tools ? { tools } : {}),
     }),
+    // Undici otherwise has a minutes-long headers timeout and no useful
+    // application deadline. A stalled upstream must fail so retry/polling can
+    // surface a paused state instead of spinning forever.
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status === 401) {
     const err = new Error('invalid_api_key');
@@ -431,7 +442,7 @@ async function generateTable(id, delib, verdictRaw) {
       verdict: stripMemoryBlock(verdictRaw),
       mode: delib.mode,
       researchText: delib.rounds.get('0:research') || '',
-    }), { maxTokens: 3000 });
+    }), { model: TABLE_MODEL, maxTokens: 3000 });
     const parsed = validateDecisionTable(extractJson(raw));
     if (!parsed) {
       // Structurally unusable output counts as a failed call: retry once.

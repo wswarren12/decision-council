@@ -288,11 +288,12 @@ function setBanner(text, actions = []) {
 // Council transport — same-origin /api/council on this container
 // ---------------------------------------------------------------------------
 
-async function council(body) {
+async function council(body, signal) {
   const res = await fetch('/api/council', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     let detail = {};
@@ -308,12 +309,23 @@ async function council(body) {
 
 // The decision table drafts in the background server-side (a single silent
 // long response would hit the gateway's idle timeout); poll until it's ready.
+// Bound both each poll and the whole draft so a dead proxy/upstream becomes a
+// retriable paused state instead of an endless spinner.
 async function councilTable(deliberationId) {
-  for (;;) {
-    const res = await council({ action: 'table', deliberation_id: deliberationId });
-    if (res.table) return res;
+  const deadline = Date.now() + 7 * 60_000;
+  while (Date.now() < deadline) {
+    try {
+      const res = await council(
+        { action: 'table', deliberation_id: deliberationId },
+        AbortSignal.timeout(15_000),
+      );
+      if (res.table) return res;
+    } catch (e) {
+      if (e.name !== 'TimeoutError' && e.name !== 'AbortError') throw e;
+    }
     await sleep(2500);
   }
+  throw new Error('decision_table_timeout');
 }
 
 // SSE-over-fetch for stage runs; calls onEvent per parsed event.
@@ -567,16 +579,42 @@ function renderVerdict(text, mode, confidenceSpread) {
   return addToThread(node);
 }
 
-function renderPaused(message, onRetry) {
+function buildErrorReport(context, error) {
+  return [
+    'PLN Decision Council error report',
+    `Time: ${new Date().toISOString()}`,
+    `Phase: ${context}`,
+    state.currentId ? `Deliberation ID: ${state.currentId}` : '',
+    `Error: ${String(error?.message || error || 'unknown_error').slice(0, 1000)}`,
+  ].filter(Boolean).join('\n');
+}
+
+async function copyErrorReport(btn, report) {
+  try {
+    await navigator.clipboard.writeText(report);
+    btn.textContent = 'Error copied';
+  } catch {
+    // Clipboard access can be blocked by an iframe permissions policy; the
+    // native prompt still gives the member selectable report text.
+    window.prompt('Copy this error report:', report);
+  }
+}
+
+function renderPaused(message, onRetry, error) {
+  const report = buildErrorReport(message, error);
   const node = addToThread(el(`
     <div class="paused-card">
       <strong>Council paused.</strong> ${esc(message)}
-      <div class="confirm-row"><button class="ghost-btn">Retry this round</button></div>
+      <div class="confirm-row">
+        <button class="ghost-btn" data-act="retry">Retry this round</button>
+        <button class="ghost-btn" data-act="copy-error">Copy error to report</button>
+      </div>
     </div>`));
-  node.querySelector('button').addEventListener('click', () => {
+  node.querySelector('[data-act="retry"]').addEventListener('click', () => {
     node.remove();
     onRetry();
   });
+  node.querySelector('[data-act="copy-error"]').addEventListener('click', (e) => copyErrorReport(e.currentTarget, report));
   return node;
 }
 
@@ -730,13 +768,18 @@ function handleCouncilError(e) {
     state.running = false;
     $('#submit-btn').disabled = false;
   } else if (e.demo) {
-    setBanner('The live council is unavailable right now (no API key configured). The example deliberation still shows the full experience.',
-      [{ label: 'Play example', onClick: playDemo }]);
+    const report = buildErrorReport('Starting the live council', e);
+    setBanner('The live council is unavailable right now (no API key configured). The example deliberation still shows the full experience.', [
+      { label: 'Play example', onClick: playDemo },
+      { label: 'Copy error to report', onClick: (event) => copyErrorReport(event.currentTarget, report) },
+    ]);
   } else if (e.cap) {
     setBanner("Today's shared council budget has been used up — the daily limit resets at midnight UTC. The example deliberation is still available.",
       [{ label: 'Play example', onClick: playDemo }]);
   } else {
-    addToThread(el(`<div class="bubble system"><strong>Something went wrong:</strong> ${esc(e.message)}. Your question wasn't lost — try again.</div>`));
+    const report = buildErrorReport('Council request', e);
+    const node = addToThread(el(`<div class="bubble system"><strong>Something went wrong:</strong> ${esc(e.message)}. Your question wasn't lost — try again.<div class="confirm-row"><button class="ghost-btn" data-act="copy-error">Copy error to report</button></div></div>`));
+    node.querySelector('[data-act="copy-error"]').addEventListener('click', (event) => copyErrorReport(event.currentTarget, report));
   }
 }
 
@@ -812,6 +855,7 @@ async function runDeliberation(question, restated) {
         failed.cap ? 'The shared daily limit was reached mid-deliberation. Retry after the reset — completed opinions are saved.'
           : 'An advisor call failed. Completed opinions are saved; retrying only re-runs the missing ones.',
         () => runStageAt(idx),
+        failed.error,
       );
       return;
     }
@@ -848,6 +892,7 @@ async function runDecisionTable(prog, mode) {
     renderPaused(
       'Drafting the decision table failed. The verdict above is unaffected — retry to draft the table.',
       () => runDecisionTable(prog, mode),
+      e,
     );
   }
 }
@@ -1070,7 +1115,7 @@ async function runTableOnly() {
       if (!failed.demo && !failed.cap && attempt < 1) return runAt(idx, attempt + 1);
       prog.fail(`${label} paused`);
       if (failed.demo || failed.cap) handleCouncilError({ demo: failed.demo, cap: failed.cap, message: failed.error });
-      renderPaused('A silent-council call failed. Completed work is saved; retrying only re-runs what’s missing.', () => runAt(idx));
+      renderPaused('A silent-council call failed. Completed work is saved; retrying only re-runs what’s missing.', () => runAt(idx), failed.error);
       return;
     }
     prog.completeStage(stage);
@@ -1104,7 +1149,7 @@ async function finishTableOnly(prog) {
   } catch (e) {
     prog.fail('Decision table paused');
     if (e.demo || e.cap) handleCouncilError(e);
-    renderPaused('Drafting the decision table failed — retry to draft it again.', () => finishTableOnly(prog));
+    renderPaused('Drafting the decision table failed — retry to draft it again.', () => finishTableOnly(prog), e);
   }
 }
 

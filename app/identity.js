@@ -42,6 +42,7 @@ export async function resolveMember(req) {
   try {
     const res = await fetch(MEMBER_CONTEXT_URL, {
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) return null; // 401 signed out, 403 no AI Apps access
     const { member } = await res.json();

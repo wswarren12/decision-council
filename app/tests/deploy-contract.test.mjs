@@ -65,6 +65,14 @@ describe('PLN deploy contract', () => {
     expect(suggestBlock.replace(/onClick:.*$/gm, '')).not.toContain("setModeUI('quick')");
   });
 
+  it('council failures provide a copyable support report with an iframe-safe fallback', async () => {
+    const src = await (await fetch(`${BASE}/app.js`)).text();
+    expect(src).toContain('Copy error to report');
+    expect(src).toContain('PLN Decision Council error report');
+    expect(src).toContain('navigator.clipboard.writeText(report)');
+    expect(src).toContain("window.prompt('Copy this error report:', report)");
+  });
+
   it('sends NO X-Frame-Options header', async () => {
     for (const path of ['/', '/health', '/api/config']) {
       const res = await fetch(`${BASE}${path}`);
@@ -106,6 +114,29 @@ describe('PLN deploy contract', () => {
       body: JSON.stringify({ action: 'nope' }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it('/api/decision-table.docx returns a downloadable Word archive', async () => {
+    const table = {
+      title: 'Launch timing',
+      decision_question: 'Launch now or later?',
+      columns: ['Status Quo', 'Launch now'],
+      rows: [
+        { label: 'Description', cells: ['Wait.', 'Ship.'] },
+        { label: 'Risk', cells: ['Delay.', 'Execution.'] },
+        { label: 'Recommendation', cells: ['Fallback.', 'Recommended.'] },
+      ],
+      notes: ['Confirm the owner.'],
+    };
+    const res = await fetch(`${BASE}/api/decision-table.docx`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    expect(res.headers.get('content-disposition')).toContain('decision-table.docx');
+    expect(Buffer.from(await res.arrayBuffer()).subarray(0, 2).toString()).toBe('PK');
   });
 
   it('/api/session reports unconfigured while OQ#8 is unresolved (no header trust)', async () => {
