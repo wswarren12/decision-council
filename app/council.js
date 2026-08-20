@@ -243,9 +243,14 @@ async function handleStage(body, res) {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no', // don't let a proxy buffer the stream
   });
   res.flushHeaders?.();
   const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  // Heartbeat: advisor calls can run minutes with no events, and the LabOS
+  // gateway drops connections that go silent. A comment frame every 15s
+  // keeps the stream alive for the whole stage.
+  const heartbeat = setInterval(() => res.write(': keepalive\n\n'), 15_000);
 
   try {
     const delib = getDelib(id);
@@ -380,6 +385,7 @@ async function handleStage(body, res) {
       cap: status === 429,
     });
   } finally {
+    clearInterval(heartbeat);
     res.end();
   }
 }
@@ -396,6 +402,23 @@ async function handleTable(body) {
   const cached = delib.rounds.get('4:table');
   if (cached) return { table: JSON.parse(cached) };
 
+  // The Opus table call outlives the gateway's idle timeout on a silent JSON
+  // response, so generation runs in the background and the client polls.
+  // Every poll returns fast, and a dropped poll never double-spends the call.
+  if (delib.tableJob?.error) {
+    const e = delib.tableJob.error;
+    delib.tableJob = null; // next poll restarts the draft
+    throw e;
+  }
+  if (!delib.tableJob) {
+    const job = { error: null };
+    delib.tableJob = job;
+    generateTable(id, delib, verdictRaw).catch((e) => { job.error = e; });
+  }
+  return { pending: true };
+}
+
+async function generateTable(id, delib, verdictRaw) {
   const sourceStage = delib.mode === 'quick' ? 1 : 2;
   const opinions = existingRounds(delib, sourceStage);
   reserveCalls(1);
@@ -442,7 +465,6 @@ async function handleTable(body) {
       table: clean,
     });
   }
-  return { table: clean };
 }
 
 async function handleFollowup(body) {

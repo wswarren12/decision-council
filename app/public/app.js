@@ -306,6 +306,16 @@ async function council(body) {
   return res.json();
 }
 
+// The decision table drafts in the background server-side (a single silent
+// long response would hit the gateway's idle timeout); poll until it's ready.
+async function councilTable(deliberationId) {
+  for (;;) {
+    const res = await council({ action: 'table', deliberation_id: deliberationId });
+    if (res.table) return res;
+    await sleep(2500);
+  }
+}
+
 // SSE-over-fetch for stage runs; calls onEvent per parsed event.
 async function councilStage(deliberationId, stage, onEvent) {
   const res = await fetch('/api/council', {
@@ -759,7 +769,7 @@ async function runDeliberation(question, restated) {
   const stages = mode === 'quick' ? [1, 3] : [1, 2, 3];
   const roundBlocks = {};
 
-  const runStageAt = async (idx) => {
+  const runStageAt = async (idx, attempt = 0) => {
     const stage = stages[idx];
     const stageName = stage === 1 ? 'Round 1: blind opinions'
       : stage === 2 ? 'Round 2: anonymized peer review' : "Chairperson: synthesizing the council's summary & verdict";
@@ -789,6 +799,9 @@ async function runDeliberation(question, restated) {
     }
 
     if (failed) {
+      // Auto-retry once before pausing — completed calls are cached, so this
+      // only re-runs what's missing.
+      if (!failed.demo && !failed.cap && attempt < 1) return runStageAt(idx, attempt + 1);
       prog.fail(`${stageName} paused`);
       if (failed.demo || failed.cap) {
         handleCouncilError({ demo: failed.demo, cap: failed.cap, message: failed.error });
@@ -825,7 +838,7 @@ async function runDeliberation(question, restated) {
 async function runDecisionTable(prog, mode) {
   prog.setStage(4, 'Chairperson: drafting the decision table');
   try {
-    const { table } = await council({ action: 'table', deliberation_id: state.currentId });
+    const { table } = await councilTable(state.currentId);
     renderDecisionTable(table);
     prog.completeStage(4);
     prog.done(`Deliberation complete · ${mode === 'quick' ? 'Quick council (no peer-review round)' : 'Full council'} · decision table ready`);
@@ -1037,7 +1050,7 @@ async function runTableOnly() {
     { stage: 1, label: 'Silent council: five advisors weighing the options' },
     { stage: 3, label: 'Silent council: chair synthesizing the deliberation' },
   ];
-  const runAt = async (idx) => {
+  const runAt = async (idx, attempt = 0) => {
     const { stage, label } = silentStages[idx];
     prog.setStage(stage, label);
     let seen = 0;
@@ -1054,6 +1067,7 @@ async function runTableOnly() {
       failed = { error: e.message, demo: e.demo, cap: e.cap };
     }
     if (failed) {
+      if (!failed.demo && !failed.cap && attempt < 1) return runAt(idx, attempt + 1);
       prog.fail(`${label} paused`);
       if (failed.demo || failed.cap) handleCouncilError({ demo: failed.demo, cap: failed.cap, message: failed.error });
       renderPaused('A silent-council call failed. Completed work is saved; retrying only re-runs what’s missing.', () => runAt(idx));
@@ -1069,7 +1083,7 @@ async function runTableOnly() {
 async function finishTableOnly(prog) {
   prog.setStage(4, 'Drafting the decision table');
   try {
-    const { table } = await council({ action: 'table', deliberation_id: state.currentId });
+    const { table } = await councilTable(state.currentId);
     renderDecisionTable(table);
     prog.completeStage(4);
     prog.done('Decision table ready — download it as Markdown or Word.');

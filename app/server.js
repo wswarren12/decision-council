@@ -135,4 +135,10 @@ app.use((err, _req, res, next) => {
 
 app.use(express.static('public'));
 
-app.listen(port, '0.0.0.0', () => console.log(`decision-council listening on ${port}`));
+const server = app.listen(port, '0.0.0.0', () => console.log(`decision-council listening on ${port}`));
+// Behind the LabOS gateway: keep-alive must outlive the proxy's idle timeout
+// (Node's 5s default causes sporadic 502s when the proxy reuses a socket
+// Node just closed), and long SSE deliberations must never be cut by Node.
+server.keepAliveTimeout = 120_000;
+server.headersTimeout = 125_000;
+server.requestTimeout = 0;
