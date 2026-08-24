@@ -50,7 +50,7 @@ const COUNCIL_MODEL = process.env.COUNCIL_MODEL || 'claude-opus-5';
 const INTAKE_MODEL = process.env.INTAKE_MODEL || 'claude-haiku-4-5';
 // Research pass compiles web findings — heavy on search, light on judgment.
 const RESEARCH_MODEL = process.env.RESEARCH_MODEL || 'claude-sonnet-4-6';
-const TABLE_MODEL = process.env.TABLE_MODEL || 'claude-sonnet-4-6';
+const TABLE_MODEL = process.env.TABLE_MODEL || 'claude-sonnet-4-8';
 const ANTHROPIC_TIMEOUT_MS = Math.max(1000, Number(process.env.ANTHROPIC_TIMEOUT_MS) || 180_000);
 const DAILY_CALL_CAP = Number(process.env.DAILY_CALL_CAP || '500');
 

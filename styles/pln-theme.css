@@ -1,20 +1,22 @@
 :root {
-  /* Protocol Labs Network design tokens */
-  --pln-color-bg: #ffffff;
-  --pln-color-surface: #f1f5f9;
-  --pln-color-text: #0f172a;
+  /* Protocol Labs Network — aligned with pl-design-system semantic roles */
+  --pln-color-bg: #f1f5f9; /* canvas (slate-100) */
+  --pln-color-surface: #ffffff;
+  --pln-color-text: #0f172a; /* slate-900 */
   --pln-color-muted: #64748b;
-  --pln-color-primary: #156ff7;
-  --pln-color-primary-hover: #1d4ed8;
-  --pln-color-border: #cbd5e1;
+  --pln-color-primary: #1b4dff; /* brand action */
+  --pln-color-primary-hover: #0f3cd9;
+  --pln-color-link: #156ff7;
+  --pln-color-border: #cbd5e1; /* slate-300 */
   --pln-radius: 8px;
-  --pln-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
-  --pln-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --pln-shadow: 0 1px 2px 0 rgba(14, 15, 17, 0.06);
+  --pln-font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
 body {
   margin: 0;
   font-family: var(--pln-font-sans);
+  font-size: 14px;
   color: var(--pln-color-text);
   background: var(--pln-color-bg);
 }
@@ -23,7 +25,7 @@ body {
   background: var(--pln-color-primary);
   color: #fff;
   border: none;
-  border-radius: var(--pln-radius);
+  border-radius: 6px;
   padding: 10px 16px;
   font: inherit;
   cursor: pointer;
@@ -32,8 +34,9 @@ body {
 
 .pln-card {
   background: var(--pln-color-surface);
-  border: 1px solid var(--pln-color-border);
   border-radius: var(--pln-radius);
   box-shadow: var(--pln-shadow);
   padding: 16px;
 }
+
+a { color: var(--pln-color-link); }

@@ -914,7 +914,7 @@ function renderDecisionTable(table) {
   const rows = gridRows.map((r) => `
     <tr${/recommendation/i.test(r.label) ? ' class="reco-row"' : ''}>
       <td class="row-label">${esc(r.label)}</td>
-      ${r.cells.map((c) => `<td>${esc(c)}</td>`).join('')}
+      ${r.cells.map((c, i) => `<td${r.ratings?.[i] ? ` class="rate-${r.ratings[i]}"` : ''}>${esc(c)}</td>`).join('')}
     </tr>`).join('');
   const node = el(`
     <div class="decision-table-card">

@@ -1,64 +1,76 @@
-# PLN AI Apps — Starter Kit v1.3
+# Decision Council
 
-Welcome! This kit lets you vibe-code an app with your AI assistant and deploy it
-to the Protocol Labs Network sandbox with a single instruction.
+A PLN AI App (starter kit v1.9) that convenes a **council of five AI advisors**
+to deliberate on a decision you're facing. Each advisor argues from a distinct
+perspective — first-principles, contrarian, executor, expansionist, outsider —
+then the council synthesizes a recommendation you can act on. It can also
+generate a **Decision Table** (exportable as `.docx` or Markdown) instead of a
+full deliberation.
 
-## What's inside
-- `CLAUDE.md` / `AGENTS.md` — instructions your AI agent reads automatically.
-- `.claude/skills/deploy-to-labs/` — the deploy skill your agent uses.
-- `.claude/skills/pl-design-system/` — how to build on-brand UI with the PL Design System.
-- `pln-app.config.json` — the LabOS connect + deploy endpoints (no secrets).
-- `pl-design-system/` — the **PL Design System**: ready-made React components
-  (Button, MemberCard, TeamCard, Table, Tabs, Badge, PageHeader, SearchInput,
-  Pagination, …), SCSS design tokens, the Inter font, and `USAGE.md` /
-  `guidelines.md`. Your agent uses these instead of hand-building UI.
-- `styles/` — a tiny CSS-variable fallback (`pln-theme.css`) for plain-HTML apps
-  that don't use React, plus font guidance.
-- `app/` — a minimal runnable Node app to start from (its `server.js`,
-  `package.json`, and `Dockerfile` are placeholders you can replace).
+Deployed as **Decision Council** on the PL Infra → AI Apps dashboard
+(`appId: decision-council`).
 
-## How to use
-1. Unzip this folder and open it in Claude Code (or your AI tool of choice).
-2. Add your app to the `app/` folder:
-   - **New app:** tell your agent what to build (e.g. "build a leaderboard page
-     using the PLN styles"). It works in `app/`.
-   - **Existing app:** copy your project's files into `app/`, then say "migrate this
-     existing app and deploy it to LabOS". Your agent takes care of whatever setup is
-     needed to run it there.
-3. When you're happy, say "deploy this app". The first time you deploy, your agent
-   will give you a LabOS link to open and approve — sign in and click **Approve**
-   to authorize the deploy. Your agent then ships the app to the PLN sandbox; the
-   first deploy can take a minute or two.
-4. Your app appears on the PL Infra → AI Apps dashboard, where you can open it.
+## How it works
 
-## Apps that need an API key or password (secrets)
-Some apps need a secret to work — for example an app that talks to ChatGPT/OpenAI,
-sends emails, or connects to a database needs an **API key** or password for that
-service. If yours does, the flow is slightly different, and your agent handles it
-for you:
+- Everything lives in `app/` — a self-contained Express (Node 20+, ESM) app
+  with a plain-HTML/JS frontend in `app/public/` styled with the PLN theme
+  (`pln-theme.css`).
+- The browser only ever talks to this server. Deliberation runs server-side
+  (`council.js`) against the Anthropic API; advisor persona prompts live in
+  `app/personas/` and never reach the client (advisors surface only as A–E).
+- Uploaded context files (PDF/DOCX/text) are extracted server-side
+  (`extract.js` via `pdf-parse`/`mammoth`) and fed into the deliberation.
+- Optional LabOS identity (`labos.js`/`identity.js`) enables per-member
+  profile, history, and daily call caps; without it the app runs identity-less.
+- Baseline usage analytics (`public/analytics.js`, kit v1.9) fire-and-forget
+  `opened`/`error`/`closed` events — the app works identically if unreachable.
 
-1. Build your app as usual — just tell your agent what you want (e.g. "an app that
-   summarizes news with ChatGPT"). It knows the app will need a key.
-2. **Never paste your API key into the chat** (and don't put it in any file). If
-   you do it by accident, your agent will ask you to use the secure page instead.
-3. When it's time to deploy, your agent registers the app as a **draft** and gives
-   you a LabOS link. Open it, enter your key(s) in the form there, and click
-   **Deploy** — that page is the only place your secrets should ever go.
-4. Updating a key later? Open your app's page in LabOS (PL Infra → AI Apps → your
-   app), click **Update secrets & redeploy**, enter the new value, and Deploy.
+Key endpoints: `GET /health`, `GET /api/config`, `GET /api/session`,
+`GET /api/me`, `GET /api/me/history`, `POST /api/council`,
+`POST /api/extract`, `POST /api/decision-table.docx`,
+`POST /api/decision-table.md`.
 
-Secrets never go into the code, the chat, or the uploaded ZIP — they are stored
-securely on the sandbox and injected into your app when it runs.
+## Run it locally
 
-## Embedding in the dashboard
-Your app is shown inside the AI Apps dashboard. Apps built with this kit display
-correctly out of the box, and your agent checks this for you on every deploy — so you
-don't need to do anything special. (The technical rule lives in `AGENTS.md` for your
-agent's reference.)
+Requires **Node 20.6+** (uses `--env-file`).
 
-## How deploy authorization works
-This kit contains **no token**. When your agent deploys, it asks LabOS for a
-short-lived deploy credential: you open a LabOS link, sign in, and approve. The
-credential is tied to your account, expires after about an hour, and is never
-written to disk — so this folder is safe to commit or share (it grants nothing on
-its own). Each new deploy session just asks you to approve again.
+```bash
+cd app
+npm install
+# edit local.env (see below), then:
+npm run local            # starts on http://localhost:3000
+```
+
+In `local.env` set:
+
+- `ANTHROPIC_API_KEY` — required for live deliberations. Without it the app
+  still runs; use the built-in **demo session** to see a canned deliberation.
+- `DEV_MEMBER` — optional fake identity (any name) to test profile/history
+  locally, since there's no LabOS cookie on localhost.
+- Optional: `PORT`, `COUNCIL_MODEL`, `INTAKE_MODEL`, `DAILY_CALL_CAP`.
+
+`local.env` is git- and docker-ignored — it never ships. In production the key
+arrives via the LabOS secrets flow, not from any file.
+
+Verify: `curl localhost:3000/health` → `{"ok":true}`, then open
+`http://localhost:3000`.
+
+Tests: `npm test` (vitest — unit + deploy-contract checks).
+
+## Deploying
+
+Say "deploy this app" to your AI agent. It follows
+`.claude/skills/deploy-to-labs/` — LabOS connect flow for a short-lived token,
+zips `app/`, uploads it. Because the app needs `ANTHROPIC_API_KEY` at runtime,
+it registers via the **draft flow**: you get a LabOS link where you paste the
+key and click Deploy. Keys are never pasted into chat or written to files.
+
+## Kit contents (v1.9)
+
+- `CLAUDE.md` / `AGENTS.md` — instructions the AI agent reads automatically.
+- `pln-app.config.json` — LabOS endpoints + this app's identity (no secrets).
+- `.claude/skills/` — deploy-to-labs, app-analytics, app-logs, app-metadata,
+  db-migration, pl-design-system, pln-member-context.
+- `pl-design-system/` — PL Design System React components + tokens (this app
+  uses the plain-HTML fallback `styles/pln-theme.css` instead).
+- `styles/` — `pln-theme.css` CSS-variable theme + font guidance.

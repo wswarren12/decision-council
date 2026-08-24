@@ -32,6 +32,16 @@ const goodTable = () => ({
 });
 
 describe('validateDecisionTable', () => {
+  it('normalizes per-cell ratings and never rejects over them', () => {
+    const src = goodTable();
+    src.rows[1].ratings = ['red', 'green']; // valid ratings pass through
+    src.rows[2].ratings = ['bogus'];        // invalid/short arrays → null-padded
+    const t = validateDecisionTable(src);
+    expect(t.rows[1].ratings).toEqual(['red', 'green']);
+    expect(t.rows[2].ratings).toEqual([null, null]);
+    expect(t.rows[0].ratings).toEqual([null, null]); // missing entirely → all null
+  });
+
   it('accepts and normalizes a well-formed table', () => {
     const t = validateDecisionTable(goodTable());
     expect(t).not.toBeNull();

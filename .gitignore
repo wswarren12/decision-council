@@ -16,6 +16,7 @@ local.env
 
 # Local tooling state
 .claude/settings.local.json
+.pi-glla/
 .playwright-mcp/
 .vscode/
 .DS_Store

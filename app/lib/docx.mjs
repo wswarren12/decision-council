@@ -57,6 +57,8 @@ const USABLE = PAGE_W - 2 * MARGIN;
 
 const HEADER_FILL = "1F4E79"; // dark blue header row (per the table style guide)
 const LABEL_FILL = "F2F2F2"; // light gray row-label column
+// Per-cell rating fills: green = best, yellow = medium, red = worst (ties allowed).
+const RATING_FILL = { green: "C6EFCE", yellow: "FFEB9C", red: "FFC7CE" };
 const BORDER = '<w:top w:val="single" w:sz="4" w:color="BFBFBF"/><w:left w:val="single" w:sz="4" w:color="BFBFBF"/><w:bottom w:val="single" w:sz="4" w:color="BFBFBF"/><w:right w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideH w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideV w:val="single" w:sz="4" w:color="BFBFBF"/>';
 
 function documentXml(table) {
@@ -74,7 +76,7 @@ function documentXml(table) {
   const bodyRows = table.rows.map((r) => [
     "<w:tr>",
     cell(r.label, { width: widths[0], fill: LABEL_FILL, bold: true }),
-    ...r.cells.map((c, i) => cell(c, { width: widths[i + 1] })),
+    ...r.cells.map((c, i) => cell(c, { width: widths[i + 1], fill: RATING_FILL[r.ratings?.[i]] ?? null })),
     "</w:tr>",
   ].join("")).join("");
 

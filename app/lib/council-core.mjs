@@ -347,10 +347,11 @@ export function buildDecisionTablePrompt({ preamble, restated, question, opinion
     "- Cells: 40 words or fewer, short but substantive, parallel granularity across each row so options compare fairly. Lead with an evaluative label where it helps scanning (Low / Medium / High / Favorable / Unfavorable / No impact / Requires review), then the concrete implication. Name the mechanism behind every tradeoff — never a vague 'more complex'. Mark evidence confidence: 'measured' when the deliberation cited data, '~est.' for reasoned sizing (state the basis), 'assumed' for premises the table depends on (repeat them in Notes). Where the council lacked evidence, write 'Unknown / needs input: <what resolves it>' — never convert missing evidence into polished certainty.",
     "- The Recommendation row must follow from the verdict and the cells above it, give a clear verdict-plus-reason per column, name the decisive criteria and material assumptions, state what would reverse the recommendation, and be able to stand alone in an email.",
     "- Frame legal, tax, and securities points as issues to review, not conclusions (e.g. 'Requires counsel review: …').",
+    "- Ratings: for every evaluation row and the Recommendation row, read across the row and rate each cell relative to its siblings: 'green' = best option(s) on that criterion, 'yellow' = middling, 'red' = worst. Ties are fine — several cells in one row may share a color when they are essentially equal. Use null for cells that aren't evaluative (e.g. a Description row). Every row's 'ratings' array must have exactly one entry per column, in column order.",
     "- The deliberation is background research only: never mention the advisors, the council, or who suggested or thought what — no 'Advisor A noted' or 'the council felt'. Write every field in a neutral analyst voice.",
     "",
     "Respond with ONLY a JSON object, no other text, in exactly this shape:",
-    '{"title": "<short table title>", "decision_question": "<the decision question in one sentence>", "situation": "<3–5 sentence situation block>", "recommendation_preview": "<one-sentence bottom line consistent with the verdict>", "columns": ["Status Quo", "<Option name + mechanism>", "..."], "rows": [{"label": "<row label>", "cells": ["<default-path cell>", "<option cell>", "..."]}], "notes": ["<assumption, missing input, or open question>", "..."]}',
+    '{"title": "<short table title>", "decision_question": "<the decision question in one sentence>", "situation": "<3–5 sentence situation block>", "recommendation_preview": "<one-sentence bottom line consistent with the verdict>", "columns": ["Status Quo", "<Option name + mechanism>", "..."], "rows": [{"label": "<row label>", "cells": ["<default-path cell>", "<option cell>", "..."], "ratings": ["green"|"yellow"|"red"|null, "..."]}], "notes": ["<assumption, missing input, or open question>", "..."]}',
     "",
     "Every row's cells array must have exactly one cell per column, in column order.",
   ].join("\n");
@@ -380,6 +381,9 @@ export function validateDecisionTable(parsed) {
       .map((r) => ({
         label: str(r?.label, 120),
         cells: Array.isArray(r?.cells) ? r.cells.map((c) => str(c, 900)) : [],
+        ratings: Array.isArray(r?.ratings)
+          ? r.ratings.map((v) => (['green', 'yellow', 'red'].includes(v) ? v : null))
+          : [],
       }))
       .filter((r) => r.label)
     : [];
@@ -402,6 +406,9 @@ export function validateDecisionTable(parsed) {
   if (rows.length < 3 || rows.length > 11) return null;
   for (const r of rows) {
     if (r.cells.length !== columns.length) return null;
+    // Ratings are best-effort color hints — normalize to one entry per cell,
+    // never reject the table over them.
+    r.ratings = r.cells.map((_, i) => r.ratings?.[i] ?? null);
   }
   // What makes this a decision aid rather than a discovery dump: a bottom
   // line, and the assumptions/open questions kept visible.
@@ -425,8 +432,9 @@ export function decisionTableMarkdown(table) {
   if (table.recommendation_preview) lines.push(`**Recommendation preview:** ${cell(table.recommendation_preview)}`, "");
   lines.push(`| Decision row | ${table.columns.map(cell).join(" | ")} |`);
   lines.push(`| --- | ${table.columns.map(() => "---").join(" | ")} |`);
+  const dot = { green: "🟢 ", yellow: "🟡 ", red: "🔴 " };
   for (const r of table.rows) {
-    lines.push(`| **${cell(r.label)}** | ${r.cells.map(cell).join(" | ")} |`);
+    lines.push(`| **${cell(r.label)}** | ${r.cells.map((c, i) => (dot[r.ratings?.[i]] ?? "") + cell(c)).join(" | ")} |`);
   }
   if (table.notes?.length) {
     lines.push("", "## Notes / open questions", "");

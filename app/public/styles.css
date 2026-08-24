@@ -251,6 +251,10 @@ details[open] .caret { transform: rotate(180deg); }
 }
 .decision-table thead .row-label { background: var(--dc-blue); }
 .decision-table .reco-row td { background: #fffbeb; }
+/* Per-cell ratings: green = best option, yellow = medium, red = worst (ties allowed) */
+.decision-table td.rate-green { background: #e7f4e4; }
+.decision-table td.rate-yellow { background: #fdf3d1; }
+.decision-table td.rate-red { background: #fbe3e4; }
 .decision-table .reco-row .row-label { background: #f4ecd4; }
 
 /* the Chairperson's pre-council request for the status quo baseline */
