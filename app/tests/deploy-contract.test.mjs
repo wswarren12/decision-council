@@ -165,3 +165,38 @@ describe('PLN deploy contract', () => {
     expect(body.files[0].words).toBeGreaterThan(3);
   });
 });
+
+// Agent API (personal-agent surface) — discoverable, and degrades to the
+// structured demo signal without a key, same as the SPA flow.
+describe('agent API', () => {
+  it('is discoverable via /llms.txt and GET /api/agent', async () => {
+    const txt = await (await fetch(`${BASE}/llms.txt`)).text();
+    expect(txt).toContain('/api/agent/runs');
+    const manifest = await (await fetch(`${BASE}/api/agent`)).json();
+    expect(manifest.endpoints.some((e) => e.path === '/api/agent/runs')).toBe(true);
+    expect(manifest.table_ratings).toContain('green');
+  });
+
+  it('POST /api/agent/runs without a key returns the demo signal (503)', async () => {
+    const res = await fetch(`${BASE}/api/agent/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ question: 'Should we migrate the forum?' }),
+    });
+    expect(res.status).toBe(503);
+    expect((await res.json()).demo).toBe(true);
+  });
+
+  it('rejects an empty question (400) and 404s unknown runs', async () => {
+    const bad = await fetch(`${BASE}/api/agent/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(bad.status).toBe(400);
+    const missing = await fetch(`${BASE}/api/agent/runs/nope`);
+    expect(missing.status).toBe(404);
+    const retryMissing = await fetch(`${BASE}/api/agent/runs/nope/retry`, { method: 'POST' });
+    expect(retryMissing.status).toBe(404);
+  });
+});

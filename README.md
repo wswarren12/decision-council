@@ -27,8 +27,67 @@ Deployed as **Decision Council** on the PL Infra → AI Apps dashboard
 
 Key endpoints: `GET /health`, `GET /api/config`, `GET /api/session`,
 `GET /api/me`, `GET /api/me/history`, `POST /api/council`,
-`POST /api/extract`, `POST /api/decision-table.docx`,
+`GET /llms.txt`, `GET /api/agent`, `POST /api/agent/runs`,
+`POST /api/extract`, `POST /api/decision-table.docx`, and
 `POST /api/decision-table.md`.
+
+## Using it from a personal agent
+
+The browser flow is not required. Hermes or another personal agent can discover
+the machine API at `GET /llms.txt` or `GET /api/agent`, then run the complete
+intake → council → verdict → decision-table pipeline server-side.
+
+Give your agent this instruction, replacing `APP_URL` with the app's base URL:
+
+```text
+Use the Decision Council at APP_URL for decisions that benefit from several
+perspectives. First read APP_URL/llms.txt and APP_URL/api/agent. Submit my
+decision and all relevant background to POST APP_URL/api/agent/runs. Use
+flow="table" when I want a researched decision table, or flow="council" when I
+mainly want council input; use mode="quick" unless I ask for the full peer-review
+round. If the response is "answered", return its answer. Otherwise poll the
+returned poll URL about every 15 seconds until complete or failed. On completion,
+return the verdict, recommendation, important dissent or open questions, and the
+color-rated table. Interpret green as best, yellow as medium, and red as worst
+within each row; ties are allowed. If context_request is returned, ask me for the
+missing information before starting a replacement run when it could materially
+change the result. Never invent owner context. On a retriable failure, call the
+provided retry endpoint once. Use the followup endpoint for questions about a
+completed deliberation.
+```
+
+Minimal request:
+
+```bash
+curl -X POST "$APP_URL/api/agent/runs" \
+  -H 'content-type: application/json' \
+  -d '{
+    "question": "Should we adopt a monorepo now?",
+    "context": "Four-person team, six independently deployed repos, duplicated CI.",
+    "mode": "quick",
+    "flow": "table"
+  }'
+```
+
+A deliberation returns `202` with `run_id`, `poll`, and `poll_seconds`. Poll the
+returned path until `status` is `complete`; the final JSON includes `verdict`,
+`table`, and ready-to-use `table_markdown`. Each row's `ratings` array is parallel
+to `cells`: `green` = best, `yellow` = medium, `red` = worst, and `null` = a
+non-evaluative cell. Multiple cells may share a rating when options tie.
+
+Useful calls:
+
+```bash
+curl "$APP_URL/api/agent/runs/$RUN_ID"
+curl -X POST "$APP_URL/api/agent/runs/$RUN_ID/retry"
+curl -X POST "$APP_URL/api/agent/runs/$RUN_ID/followup" \
+  -H 'content-type: application/json' \
+  -d '{"question":"What evidence would reverse the recommendation?"}'
+```
+
+The manifest documents response shapes and Markdown/Word export endpoints.
+Anonymous calls work under the global daily cap; LabOS member calls also receive
+profile/history behavior and the per-member run cap.
 
 ## Run it locally
 
@@ -47,7 +106,8 @@ In `local.env` set:
   still runs; use the built-in **demo session** to see a canned deliberation.
 - `DEV_MEMBER` — optional fake identity (any name) to test profile/history
   locally, since there's no LabOS cookie on localhost.
-- Optional: `PORT`, `COUNCIL_MODEL`, `INTAKE_MODEL`, `DAILY_CALL_CAP`.
+- Optional: `PORT`, `COUNCIL_MODEL`, `INTAKE_MODEL`, `RESEARCH_MODEL`,
+  `TABLE_MODEL`, `ANTHROPIC_TIMEOUT_MS`, `DAILY_CALL_CAP`.
 
 `local.env` is git- and docker-ignored — it never ships. In production the key
 arrives via the LabOS secrets flow, not from any file.

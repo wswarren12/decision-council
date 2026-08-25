@@ -11,7 +11,14 @@ import { resolveSession, isConfigured } from './labos.js';
 import { resolveMember } from './identity.js';
 import { getHistory, getProfile, setPreferences } from './store.js';
 import { extractAll, MAX_TOTAL_BYTES } from './extract.js';
-import { councilHandler, liveEnabled } from './council.js';
+import {
+  agentFollowupHandler,
+  agentRetryHandler,
+  agentStartHandler,
+  agentStatusHandler,
+  councilHandler,
+  liveEnabled,
+} from './council.js';
 import { decisionTableMarkdown, validateDecisionTable } from './lib/council-core.mjs';
 import { decisionTableDocx } from './lib/docx.mjs';
 
@@ -80,6 +87,49 @@ app.get('/api/me/history', withMember, (req, res) => {
 
 // The deliberation engine (intake / start / stage / table / followup).
 app.post('/api/council', express.json({ limit: '2mb' }), withMember, councilHandler);
+
+// Agent API — a one-shot, pollable surface for machine callers (a member's
+// personal agent, e.g. Hermes). GET /api/agent is the JSON manifest;
+// /llms.txt is the discovery convention pointing at it.
+const AGENT_MANIFEST = {
+  name: 'PLN Decision Council',
+  description: 'Five-advisor AI deliberation. POST a decision question; poll one URL until the verdict and color-rated decision table are ready.',
+  auth: 'none — anonymous calls work (global daily cap); LabOS members also get run history',
+  endpoints: [
+    {
+      method: 'POST',
+      path: '/api/agent/runs',
+      body: {
+        question: 'required — the decision to deliberate (max 4000 chars)',
+        context: "optional — background from the agent's owner (current state, constraints, options already considered)",
+        mode: "optional — 'quick' (default) or 'full' (adds an advisor peer-review round; slower)",
+        flow: "optional — 'table' (default; adds a web-research pass before deliberation) or 'council'",
+      },
+      returns: '202 {run_id, status, poll, poll_seconds, context_request?} — or 200 {status:"answered", answer} when the question does not need a council',
+    },
+    {
+      method: 'GET',
+      path: '/api/agent/runs/:run_id',
+      returns: '{status: running|complete|failed, stage, verdict?, table?, table_markdown?, context_request?, error?, retry?}. Poll every ~15s; quick runs take a few minutes, full runs longer. If context_request is set, consider re-running with that background in `context`.',
+    },
+    { method: 'POST', path: '/api/agent/runs/:run_id/retry', returns: 'resumes a failed run — completed advisor rounds are cached and never re-spent' },
+    { method: 'POST', path: '/api/agent/runs/:run_id/followup', body: { question: 'ask the Chairperson about the finished deliberation' }, returns: '{answer}' },
+    { method: 'POST', path: '/api/decision-table.md', body: { table: 'a `table` object from a completed run' }, returns: 'text/markdown render' },
+    { method: 'POST', path: '/api/decision-table.docx', body: { table: 'a `table` object from a completed run' }, returns: 'Word document' },
+  ],
+  table_ratings: 'each table row carries ratings[] parallel to cells[]: green = best option on that criterion, yellow = medium, red = worst; ties allowed; null = non-evaluative',
+  notes: 'Decision support only — not legal, accounting, or financial advice.',
+};
+app.get('/api/agent', (_req, res) => res.json(AGENT_MANIFEST));
+app.get('/llms.txt', (_req, res) => res.type('text/plain').send(
+  'PLN Decision Council — agent API\n\n'
+  + 'GET /api/agent for the JSON manifest.\n'
+  + 'Typical flow: POST /api/agent/runs {"question":"...","context":"..."} → poll GET /api/agent/runs/:run_id every ~15s until status=complete → read verdict + table (per-cell ratings: green=best, yellow=medium, red=worst).\n',
+));
+app.post('/api/agent/runs', express.json({ limit: '2mb' }), withMember, agentStartHandler);
+app.get('/api/agent/runs/:id', agentStatusHandler);
+app.post('/api/agent/runs/:id/retry', agentRetryHandler);
+app.post('/api/agent/runs/:id/followup', express.json({ limit: '256kb' }), agentFollowupHandler);
 
 // Word-document render of a Chairperson decision table. Stateless by design:
 // the SPA posts back the table JSON it received from the `table` action (or

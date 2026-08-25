@@ -32,6 +32,7 @@ import {
   buildStage1Prompt,
   buildStage2Prompt,
   confidenceSpread,
+  decisionTableMarkdown,
   extractConfidence,
   extractJson,
   fitAttachments,
@@ -50,7 +51,9 @@ const COUNCIL_MODEL = process.env.COUNCIL_MODEL || 'claude-opus-5';
 const INTAKE_MODEL = process.env.INTAKE_MODEL || 'claude-haiku-4-5';
 // Research pass compiles web findings — heavy on search, light on judgment.
 const RESEARCH_MODEL = process.env.RESEARCH_MODEL || 'claude-sonnet-4-6';
-const TABLE_MODEL = process.env.TABLE_MODEL || 'claude-sonnet-4-8';
+// Table drafting + per-cell ratings: opus-5 per owner request (sonnet-4.8 is
+// not a real API model id). Background job + polling absorbs opus latency.
+const TABLE_MODEL = process.env.TABLE_MODEL || 'claude-opus-5';
 const ANTHROPIC_TIMEOUT_MS = Math.max(1000, Number(process.env.ANTHROPIC_TIMEOUT_MS) || 180_000);
 const DAILY_CALL_CAP = Number(process.env.DAILY_CALL_CAP || '500');
 
@@ -123,6 +126,10 @@ export async function anthropic(prompt, {
     body: JSON.stringify({
       model,
       max_tokens: maxTokens,
+      // Every maxTokens budget in this app is a TEXT budget. opus-5 thinks by
+      // default and its thinking spends from max_tokens, silently truncating
+      // advisor opinions and the decision-table JSON — so thinking is off.
+      thinking: { type: 'disabled' },
       messages: [{ role: 'user', content: prompt }],
       ...(tools ? { tools } : {}),
     }),
@@ -264,7 +271,31 @@ async function handleStage(body, res) {
   const heartbeat = setInterval(() => res.write(': keepalive\n\n'), 15_000);
 
   try {
-    const delib = getDelib(id);
+    await runStage(getDelib(id), stage, send);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const status = e?.status;
+    try {
+      const delib = deliberations.get(id);
+      if (delib) delib.status = `stage${stage}_failed`;
+    } catch { /* best-effort */ }
+    send({
+      type: 'stage_failed',
+      stage,
+      error: msg,
+      retriable: status !== 429 && status !== 503,
+      demo: status === 503,
+      cap: status === 429,
+    });
+  } finally {
+    clearInterval(heartbeat);
+    res.end();
+  }
+}
+
+// One deliberation stage, emitting progress via `send` (SSE for the SPA, a
+// no-op for the agent pipeline). Idempotent: stored rounds are never re-run.
+async function runStage(delib, stage, send) {
     if (stage === 2 && delib.mode === 'quick') throw new Error('quick_mode_has_no_stage2');
     delib.status = `stage${stage}_running`;
     send({ type: 'stage_started', stage });
@@ -380,25 +411,6 @@ async function handleStage(body, res) {
       send({ type: 'verdict', stage: 3, content: display, confidence_spread: spread });
       send({ type: 'stage_complete', stage: 3 });
     }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    const status = e?.status;
-    try {
-      const delib = deliberations.get(id);
-      if (delib) delib.status = `stage${stage}_failed`;
-    } catch { /* best-effort */ }
-    send({
-      type: 'stage_failed',
-      stage,
-      error: msg,
-      retriable: status !== 429 && status !== 503,
-      demo: status === 503,
-      cap: status === 429,
-    });
-  } finally {
-    clearInterval(heartbeat);
-    res.end();
-  }
 }
 
 // Post-verdict: the Chairperson distills the deliberation into a decision
@@ -442,10 +454,14 @@ async function generateTable(id, delib, verdictRaw) {
       verdict: stripMemoryBlock(verdictRaw),
       mode: delib.mode,
       researchText: delib.rounds.get('0:research') || '',
-    }), { model: TABLE_MODEL, maxTokens: 3000 });
+    // 5000: cells + per-cell ratings arrays overflow 3000 and truncate the JSON.
+    }), { model: TABLE_MODEL, maxTokens: 5000 });
     const parsed = validateDecisionTable(extractJson(raw));
     if (!parsed) {
       // Structurally unusable output counts as a failed call: retry once.
+      // Log the tail (model output only, no secrets) — the usual culprits are
+      // truncation or a renamed default-path column, both visible there.
+      console.error(`malformed_decision_table: json=${Boolean(extractJson(raw))} len=${raw.length} tail=${JSON.stringify(raw.slice(-400))}`);
       throw new Error('malformed_decision_table');
     }
     return parsed;
@@ -461,6 +477,7 @@ async function generateTable(id, delib, verdictRaw) {
     rows: table.rows.map((r) => ({
       label: sanitizeOpinion(r.label),
       cells: r.cells.map(sanitizeOpinion),
+      ratings: r.ratings, // color hints (green/yellow/red/null) — no text to scrub
     })),
     notes: (table.notes ?? []).map(sanitizeOpinion),
   };
@@ -507,6 +524,104 @@ async function handleFollowup(body) {
 }
 
 // ---------------------------------------------------------------------------
+// Agent API (machine callers — e.g. a member's personal agent).
+//
+// The SPA flow above is browser-shaped: SSE streams and client-driven stages.
+// Agents get a one-shot pipeline instead: POST a question, poll one URL until
+// the verdict + color-rated decision table are ready. The run_id doubles as a
+// deliberation_id, so all cached-round idempotency applies unchanged.
+// ---------------------------------------------------------------------------
+
+export async function agentStartHandler(req, res) {
+  try {
+    const body = req.body ?? {};
+    const question = String(body.question ?? '').trim();
+    const context = String(body.context ?? '').trim();
+    if (!question || question.length > 4000) return res.status(400).json({ error: 'invalid_question' });
+
+    // Intake triage first — a question the Chairperson can answer directly
+    // costs one haiku call instead of a full council.
+    const intake = await handleIntake({ question });
+    if (!intake.convene && intake.direct_answer) {
+      return res.json({ status: 'answered', answer: intake.direct_answer });
+    }
+
+    // Agent-supplied background rides the existing attachments path (size-fitted).
+    const { deliberation_id: id } = handleStart({
+      question,
+      restated: intake.restated,
+      mode: body.mode === 'full' ? 'full' : 'quick',
+      flow: body.flow === 'council' ? 'council' : 'table',
+      attachments: context ? [{ filename: 'agent-context.txt', text: context }] : [],
+    }, req.member);
+    const delib = getDelib(id);
+    delib.agent = {
+      running: false,
+      error: null,
+      context_request: intake.needs_context ? intake.context_request : null,
+    };
+    startAgentPipeline(id, delib);
+    res.status(202).json({
+      run_id: id,
+      status: 'running',
+      poll: `/api/agent/runs/${id}`,
+      poll_seconds: 15,
+      ...(delib.agent.context_request ? { context_request: delib.agent.context_request } : {}),
+    });
+  } catch (e) {
+    sendError(res, e);
+  }
+}
+
+function startAgentPipeline(id, delib) {
+  if (delib.agent.running || delib.rounds.has('4:table')) return;
+  delib.agent.running = true;
+  delib.agent.error = null;
+  (async () => {
+    const noop = () => {};
+    await runStage(delib, 1, noop);
+    if (delib.mode !== 'quick') await runStage(delib, 2, noop);
+    await runStage(delib, 3, noop);
+    await generateTable(id, delib, delib.rounds.get('3:chair'));
+  })()
+    .catch((e) => { delib.agent.error = e instanceof Error ? e.message : String(e); })
+    .finally(() => { delib.agent.running = false; });
+}
+
+export function agentStatusHandler(req, res) {
+  let delib;
+  try { delib = getDelib(req.params.id); } catch { return res.status(404).json({ error: 'not_found' }); }
+  const tableRaw = delib.rounds.get('4:table');
+  const verdictRaw = delib.rounds.get('3:chair');
+  const table = tableRaw ? JSON.parse(tableRaw) : null;
+  res.json({
+    run_id: req.params.id,
+    status: table ? 'complete' : delib.agent?.error ? 'failed' : 'running',
+    stage: delib.status,
+    ...(delib.agent?.error ? { error: delib.agent.error, retry: `POST /api/agent/runs/${req.params.id}/retry` } : {}),
+    ...(delib.agent?.context_request ? { context_request: delib.agent.context_request } : {}),
+    ...(verdictRaw ? { verdict: sanitizeOpinion(stripMemoryBlock(verdictRaw)) } : {}),
+    ...(table ? { table, table_markdown: decisionTableMarkdown(table) } : {}),
+  });
+}
+
+export function agentRetryHandler(req, res) {
+  let delib;
+  try { delib = getDelib(req.params.id); } catch { return res.status(404).json({ error: 'not_found' }); }
+  if (!delib.agent) return res.status(400).json({ error: 'not_an_agent_run' });
+  startAgentPipeline(req.params.id, delib);
+  res.status(202).json({ run_id: req.params.id, status: 'running', poll: `/api/agent/runs/${req.params.id}` });
+}
+
+export async function agentFollowupHandler(req, res) {
+  try {
+    res.json(await handleFollowup({ deliberation_id: req.params.id, question: req.body?.question }));
+  } catch (e) {
+    sendError(res, e);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Express entry point
 // ---------------------------------------------------------------------------
 
@@ -528,18 +643,27 @@ export async function councilHandler(req, res) {
         return res.status(400).json({ error: 'unknown_action' });
     }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    const status = e?.status ?? 500;
-    // Structured demo-mode signal (AC-6.1): missing/invalid key -> demo.
-    if (msg === 'no_api_key' || msg === 'invalid_api_key') {
-      return res.status(503).json({ error: msg, demo: true });
-    }
-    if (msg === 'daily_cap_reached') {
-      return res.status(429).json({ error: msg, cap: DAILY_CALL_CAP });
-    }
-    if (msg === 'user_daily_cap') {
-      return res.status(429).json({ error: msg, userCap: true });
-    }
-    return res.status(status >= 400 && status < 600 ? status : 500).json({ error: msg });
+    sendError(res, e);
   }
+}
+
+// Shared HTTP error mapping for the SPA and agent surfaces.
+function sendError(res, e) {
+  const msg = e instanceof Error ? e.message : String(e);
+  const status = e?.status ?? 500;
+  // Structured demo-mode signal (AC-6.1): missing/invalid key -> demo.
+  if (msg === 'no_api_key' || msg === 'invalid_api_key') {
+    return res.status(503).json({ error: msg, demo: true });
+  }
+  if (msg === 'daily_cap_reached') {
+    return res.status(429).json({ error: msg, cap: DAILY_CALL_CAP });
+  }
+  if (msg === 'user_daily_cap') {
+    return res.status(429).json({ error: msg, userCap: true });
+  }
+  if (msg === 'not_found') return res.status(404).json({ error: msg });
+  if (msg === 'invalid_question' || msg === 'bad_request' || msg === 'no_verdict_yet') {
+    return res.status(400).json({ error: msg });
+  }
+  return res.status(status >= 400 && status < 600 ? status : 500).json({ error: msg });
 }
