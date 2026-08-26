@@ -123,6 +123,8 @@ describe('PLN deploy contract', () => {
       columns: ['Status Quo', 'Launch now'],
       rows: [
         { label: 'Description', cells: ['Wait.', 'Ship.'] },
+        { label: 'Member impact', cells: ['Familiar.', 'Faster.'] },
+        { label: 'Operational impact', cells: ['Dual maintenance.', 'One cutover.'] },
         { label: 'Risk', cells: ['Delay.', 'Execution.'] },
         { label: 'Recommendation', cells: ['Fallback.', 'Recommended.'] },
       ],

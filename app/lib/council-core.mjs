@@ -313,14 +313,13 @@ export function buildFollowupPrompt({ preamble, restated, verdict, rounds, follo
 }
 
 // The Chairperson's decision table (post-verdict). The shape and rules come
-// from the decision-table skill v1.1.0: a Situation block, a row-label
-// column, an honest default path (Status Quo / No action / Default path),
-// then 1–4 genuinely distinct options; 4–7 discriminating evaluation rows
-// chosen around the constituents the decision actually touches; hard-gate
-// failures marked visibly; evidence confidence markers in cells;
-// Recommendation and Notes / open questions as the final two rows. Output is
-// strict JSON so the same object renders the in-app table and the
-// downloadable Word document.
+// from the decision-table skill v1.1.0: a Situation block, an honest default
+// path (Status Quo / No action / Default path), then 1–4 genuinely distinct
+// options; 4–7 discriminating evaluation rows chosen around the constituents
+// the decision actually touches; hard-gate failures marked visibly; evidence
+// confidence markers in cells; grouped Category/Feature rows; a single
+// selected Decision last; and Notes below the table. Output is strict JSON
+// so the same object renders in-app and in downloads.
 export function buildDecisionTablePrompt({ preamble, restated, question, opinions, verdict, mode, researchText }) {
   const blocks = opinions
     .map((o) => `<opinion advisor="Advisor ${o.letter}">\n${fenceUntrusted(o.text)}\n</opinion>`)
@@ -342,16 +341,16 @@ export function buildDecisionTablePrompt({ preamble, restated, question, opinion
     "Build the table by these rules:",
     "- Situation: write a 'situation' field of 3–5 sentences a cold reader can act on — the forcing event, 2–3 quantities that size the issue, the decide-by date or timing constraint, and the cost of no decision. If a required quantity or date is genuinely unavailable from the deliberation, write 'needs input' rather than inventing it.",
     "- Columns: the first column is the TRUE default path — the member's real current path if nothing changes, stated honestly (what continues, what stays unsolved, why it may still be tolerable for now). It is never a strawman. Label it accurately: 'Status Quo', 'No action', or 'Default path'; if the current path expires or is infeasible, keep it only as a counterfactual and state the failure date or constraint in its cells. Then 1–4 genuinely distinct, mutually exclusive options drawn from the deliberation (the member's proposal is one; add others only if the council actually surfaced them). Name each option by label + mechanism (e.g. 'Boundary Cutover + Warm Start'), never 'Option A'.",
-    "- Rows: an optional Description row first, then 4–7 discriminating evaluation rows tailored to the constituents and systems THIS decision touches (member/user impact, operational impact, technical/systems impact, legal/compliance/tax impact when relevant, time/cost, key risks, reversibility for one-way doors). Every evaluation row must discriminate among the options — drop rows that don't, no filler. The final row MUST be 'Recommendation'. Do NOT include a notes row — assumptions, missing inputs (with who or what resolves them), screened-out options, and unresolved questions go in the top-level 'notes' array, which renders below the table.",
+    "- Category / Feature rows: produce 2–4 meaningful categories with 2–3 specific features or considerations under each (5–9 evaluation rows total). Repeat each category name EXACTLY on its contiguous feature rows so the renderer can merge the Category cells. Keep the familiar categories when relevant: Member / User impact, Operations, Technical / Systems, Legal / Compliance / Tax, Time / Cost, and Risk / Reversibility. A feature is the specific consideration being compared inside that category; do not make every feature its own category. Every feature row must discriminate among options — no filler. Do NOT create a Recommendation, Decision, or Notes row; the renderer appends the final Decision row from the top-level 'decision' object, and Notes render below the table.",
     "- Blocking issues: if an option has a constraint problem it must overcome to remain viable, don't just flag it — explain the issue, the fix or mitigation that would resolve it, and the rough effort or ROI of that fix (e.g. 'Requires SOC 2 before enterprise sales; ~one quarter of compliance work, unlocks the segment'). Never average a blocking issue into a favorable overall impression.",
-    "- Cells: 40 words or fewer, short but substantive, parallel granularity across each row so options compare fairly. Lead with an evaluative label where it helps scanning (Low / Medium / High / Favorable / Unfavorable / No impact / Requires review), then the concrete implication. Name the mechanism behind every tradeoff — never a vague 'more complex'. Mark evidence confidence: 'measured' when the deliberation cited data, '~est.' for reasoned sizing (state the basis), 'assumed' for premises the table depends on (repeat them in Notes). Where the council lacked evidence, write 'Unknown / needs input: <what resolves it>' — never convert missing evidence into polished certainty.",
-    "- The Recommendation row must follow from the verdict and the cells above it, give a clear verdict-plus-reason per column, name the decisive criteria and material assumptions, state what would reverse the recommendation, and be able to stand alone in an email.",
+    "- Cells: default to ONE short statement of 20 words or fewer (25 only when a blocking issue cannot stay accurate otherwise). Every cell MUST begin with exactly one scan label: 'High positive:', 'Moderate positive:', 'Low / neutral:', 'Moderate negative:', 'High negative:', 'N/A:', or 'Unknown / needs input:'. Use 'N/A:' for non-evaluative Description cells. Then state the concrete implication and mechanism; never write a vague 'more complex'. Keep parallel granularity across each row. Mark evidence confidence compactly: 'measured', '~est.' (with basis), or 'assumed' (repeat assumptions in Notes). Never convert missing evidence into polished certainty.",
+    "- Decision: set 'decision.option_index' to the ONE recommended column using 1-based numbering, and write 'decision.statement' as a stand-alone recommendation of 20 words or fewer. It must follow from the verdict and table; put assumptions and reversal conditions in Notes. This becomes the last row: Category 'Decision', Feature 'Mark the option you picked. (documents outcome for others)', with only the chosen option cell highlighted and bold.",
     "- Frame legal, tax, and securities points as issues to review, not conclusions (e.g. 'Requires counsel review: …').",
-    "- Ratings: for every evaluation row and the Recommendation row, read across the row and rate each cell relative to its siblings: 'green' = best option(s) on that criterion, 'yellow' = middling, 'red' = worst. Ties are fine — several cells in one row may share a color when they are essentially equal. Use null for cells that aren't evaluative (e.g. a Description row). Every row's 'ratings' array must have exactly one entry per column, in column order.",
+    "- Ratings: for every evaluation row, read across the row and rate each cell relative to its siblings: 'green' = best option(s) on that consideration, 'yellow' = middling, 'red' = worst. Ties are fine. Use null for cells that aren't evaluative (e.g. a Description row). Every row's 'ratings' array must have exactly one entry per column, in column order.",
     "- The deliberation is background research only: never mention the advisors, the council, or who suggested or thought what — no 'Advisor A noted' or 'the council felt'. Write every field in a neutral analyst voice.",
     "",
     "Respond with ONLY a JSON object, no other text, in exactly this shape:",
-    '{"title": "<short table title>", "decision_question": "<the decision question in one sentence>", "situation": "<3–5 sentence situation block>", "recommendation_preview": "<one-sentence bottom line consistent with the verdict>", "columns": ["Status Quo", "<Option name + mechanism>", "..."], "rows": [{"label": "<row label>", "cells": ["<default-path cell>", "<option cell>", "..."], "ratings": ["green"|"yellow"|"red"|null, "..."]}], "notes": ["<assumption, missing input, or open question>", "..."]}',
+    '{"title": "<short table title>", "decision_question": "<the decision question in one sentence>", "situation": "<3–5 sentence situation block>", "recommendation_preview": "<one-sentence bottom line consistent with the verdict>", "columns": ["Status Quo", "<Option name + mechanism>", "..."], "rows": [{"category": "<category repeated exactly for related contiguous rows>", "feature": "<specific feature or consideration>", "cells": ["<default-path cell>", "<option cell>", "..."], "ratings": ["green"|"yellow"|"red"|null, "..."]}], "decision": {"option_index": 1, "statement": "<recommended decision in 20 words or fewer>"}, "notes": ["<assumption, missing input, or open question>", "..."]}',
     "",
     "Every row's cells array must have exactly one cell per column, in column order.",
   ].join("\n");
@@ -360,6 +359,17 @@ export function buildDecisionTablePrompt({ preamble, restated, question, opinion
 // Shape gate for the model's decision-table JSON. Returns a normalized copy
 // (strings trimmed and length-capped) or null when the structure is unusable
 // — the caller treats null as a malformed round and retries once.
+export function decisionRowParts(label) {
+  const feature = String(label ?? "").trim();
+  const category = /^(recommendation|decision|recommended decision)$/i.test(feature) ? "Decision"
+    : /description|problem solved|primary objective|outcome/i.test(feature) ? "Overview"
+      : /member|user|operational|technical|systems|legal|compliance|tax|impact|record integrity/i.test(feature) ? "Impact"
+        : /time|cost|effort|speed|timeline|resource/i.test(feature) ? "Delivery"
+          : /risk|revers|constraint|block|dependenc|precondition/i.test(feature) ? "Risk"
+            : "Evaluation";
+  return { category, feature };
+}
+
 export function validateDecisionTable(parsed) {
   if (!parsed || typeof parsed !== "object") return null;
   const str = (v, cap) => {
@@ -372,48 +382,79 @@ export function validateDecisionTable(parsed) {
   const preview = str(parsed.recommendation_preview, 500);
   if (!title || !decisionQuestion) return null;
   const columns = Array.isArray(parsed.columns) ? parsed.columns.map((c) => str(c, 160)).filter(Boolean) : [];
-  // Default path + 1–4 options (5 data columns max = skill v1.1.0's
-  // six-column ceiling including the row-label column).
   if (columns.length < 2 || columns.length > 5) return null;
   if (!/status quo|no action|default path/i.test(columns[0])) return null;
-  const allRows = Array.isArray(parsed.rows)
-    ? parsed.rows
-      .map((r) => ({
-        label: str(r?.label, 120),
-        cells: Array.isArray(r?.cells) ? r.cells.map((c) => str(c, 900)) : [],
-        ratings: Array.isArray(r?.ratings)
-          ? r.ratings.map((v) => (['green', 'yellow', 'red'].includes(v) ? v : null))
-          : [],
-      }))
-      .filter((r) => r.label)
-    : [];
-  // Notes live BELOW the table, not in it. Accept the top-level notes array
-  // (current contract) and also extract any legacy notes row (older payloads,
-  // demo fixture) so both normalize to the same shape.
+
   const notes = (Array.isArray(parsed.notes) ? parsed.notes : [])
     .map((n) => str(n, 600)).filter(Boolean);
+  let legacyDecision = null;
+  const sourceRows = Array.isArray(parsed.rows) ? parsed.rows : [];
+  const hasNativeGroups = sourceRows.some((row) => row?.category && row?.feature);
   const rows = [];
-  for (const r of allRows) {
-    if (/notes|open questions/i.test(r.label)) {
-      for (const c of r.cells) {
-        const t = str(c, 600);
-        if (t && t !== '—' && !notes.includes(t)) notes.push(t);
+  for (const source of sourceRows) {
+    const fallback = decisionRowParts(source?.label);
+    const category = str(source?.category, 120) || fallback.category;
+    const feature = str(source?.feature, 120) || fallback.feature;
+    if (!feature) continue;
+    const row = {
+      label: feature,
+      category,
+      feature,
+      cells: Array.isArray(source?.cells) ? source.cells.map((c) => str(c, 900)) : [],
+      ratings: Array.isArray(source?.ratings)
+        ? source.ratings.map((v) => (['green', 'yellow', 'red'].includes(v) ? v : null))
+        : [],
+    };
+    if (/notes|open questions/i.test(feature)) {
+      for (const c of row.cells) {
+        const note = str(c, 600);
+        if (note && note !== '—' && !notes.includes(note)) notes.push(note);
       }
+    } else if (/^(recommendation|decision|recommended decision)$/i.test(feature) || /^decision$/i.test(category)) {
+      legacyDecision = row;
     } else {
-      rows.push(r);
+      rows.push(row);
     }
   }
-  if (rows.length < 3 || rows.length > 11) return null;
-  for (const r of rows) {
-    if (r.cells.length !== columns.length) return null;
-    // Ratings are best-effort color hints — normalize to one entry per cell,
-    // never reject the table over them.
-    r.ratings = r.cells.map((_, i) => r.ratings?.[i] ?? null);
+  if (rows.length < 3 || rows.length > 10 || !notes.length) return null;
+  if (!hasNativeGroups) {
+    const order = [...new Set(rows.map((row) => row.category))];
+    rows.sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category));
   }
-  // What makes this a decision aid rather than a discovery dump: a bottom
-  // line, and the assumptions/open questions kept visible.
-  if (!rows.some((r) => /recommendation/i.test(r.label))) return null;
-  if (!notes.length) return null;
+  const categoryCounts = new Map();
+  const categoryOrder = [];
+  for (const row of rows) {
+    if (row.cells.length !== columns.length) return null;
+    row.ratings = row.cells.map((_, i) => row.ratings?.[i] ?? null);
+    categoryCounts.set(row.category, (categoryCounts.get(row.category) ?? 0) + 1);
+    if (categoryOrder.at(-1) !== row.category) {
+      if (categoryOrder.includes(row.category)) return null; // category groups must stay contiguous
+      categoryOrder.push(row.category);
+    }
+  }
+  if (categoryOrder.length < 2 || categoryOrder.length > 4 || ![...categoryCounts.values()].some((count) => count > 1)) return null;
+
+  let decisionIndex = Number(parsed.decision?.option_index) - 1;
+  if (!Number.isInteger(decisionIndex) || decisionIndex < 0 || decisionIndex >= columns.length) {
+    decisionIndex = legacyDecision?.ratings?.findIndex((rating) => rating === 'green') ?? -1;
+  }
+  if (decisionIndex < 0 && legacyDecision) {
+    decisionIndex = legacyDecision.cells.findIndex((text) => /recommended|adopt|choose|primary direction/i.test(text));
+  }
+  if (decisionIndex < 0 || decisionIndex >= columns.length) return null;
+  const decisionStatement = str(parsed.decision?.statement, 300)
+    || str(legacyDecision?.cells?.[decisionIndex], 300)
+    || preview
+    || `Choose ${columns[decisionIndex]}.`;
+  rows.push({
+    label: 'Decision',
+    category: 'Decision',
+    feature: 'Mark the option you picked. (documents outcome for others)',
+    cells: columns.map((_, i) => i === decisionIndex ? decisionStatement : ''),
+    ratings: columns.map((_, i) => i === decisionIndex ? 'green' : null),
+    decision_index: decisionIndex,
+  });
+
   return { title, decision_question: decisionQuestion, situation, recommendation_preview: preview, columns, rows, notes: notes.slice(0, 12) };
 }
 
@@ -430,11 +471,17 @@ export function decisionTableMarkdown(table) {
   ];
   if (table.situation) lines.push(`**Situation:** ${cell(table.situation)}`, "");
   if (table.recommendation_preview) lines.push(`**Recommendation preview:** ${cell(table.recommendation_preview)}`, "");
-  lines.push(`| Decision row | ${table.columns.map(cell).join(" | ")} |`);
-  lines.push(`| --- | ${table.columns.map(() => "---").join(" | ")} |`);
+  lines.push("**Legend:** 🟢 strongest / positive · 🟡 mixed / moderate · 🔴 weakest / negative", "");
+  lines.push(`| Category | Feature | ${table.columns.map((c, i) => `${i + 1}. ${cell(c)}`).join(" | ")} |`);
+  lines.push(`| --- | --- | ${table.columns.map(() => "---").join(" | ")} |`);
   const dot = { green: "🟢 ", yellow: "🟡 ", red: "🔴 " };
   for (const r of table.rows) {
-    lines.push(`| **${cell(r.label)}** | ${r.cells.map((c, i) => (dot[r.ratings?.[i]] ?? "") + cell(c)).join(" | ")} |`);
+    const { category, feature } = r.category && r.feature ? r : decisionRowParts(r.label);
+    const values = r.cells.map((c, i) => {
+      const value = (dot[r.ratings?.[i]] ?? "") + cell(c);
+      return category === 'Decision' && i === r.decision_index ? `**${value}**` : value;
+    });
+    lines.push(`| **${cell(category)}** | **${cell(feature)}** | ${values.join(" | ")} |`);
   }
   if (table.notes?.length) {
     lines.push("", "## Notes / open questions", "");

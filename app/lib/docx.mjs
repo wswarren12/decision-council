@@ -5,6 +5,8 @@
 // parts — so the app ships no document library, in keeping with the deploy
 // contract's minimal-dependency rule. Pure module: no Express, testable.
 
+import { readFileSync } from 'node:fs';
+
 // ---------------------------------------------------------------------------
 // XML
 // ---------------------------------------------------------------------------
@@ -17,7 +19,18 @@ export function escXml(s) {
     ));
 }
 
-const FONT = '<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>';
+const FONT = '<w:rFonts w:ascii="IBM Plex Sans" w:hAnsi="IBM Plex Sans"/>';
+const REGULAR_FONT = readFileSync(new URL('../assets/fonts/IBMPlexSans-Regular.ttf', import.meta.url));
+const SEMIBOLD_FONT = readFileSync(new URL('../assets/fonts/IBMPlexSans-SemiBold.ttf', import.meta.url));
+const REGULAR_KEY = '001B70DC-AA60-4AD5-90EC-18A0948E1EAE';
+const SEMIBOLD_KEY = 'A7B3C4D5-E6F7-4890-ABCD-1234567890EF';
+
+export function obfuscateFont(font, key) {
+  const out = Buffer.from(font);
+  const bytes = Buffer.from(key.replace(/-/g, ''), 'hex').reverse();
+  for (let i = 0; i < Math.min(32, out.length); i++) out[i] ^= bytes[i % 16];
+  return out;
+}
 
 function run(text, { bold = false, italic = false, color = null, size = null } = {}) {
   const props = [
@@ -35,11 +48,12 @@ function para(runs, { spacingAfter = 120 } = {}) {
 }
 
 // A table cell: optional shading, cell width in twips, one paragraph.
-function cell(text, { width, fill = null, bold = false, color = null, size = 18 } = {}) {
+function cell(text, { width, fill = null, bold = false, color = null, size = 18, vMerge = null } = {}) {
   const shd = fill ? `<w:shd w:val="clear" w:color="auto" w:fill="${fill}"/>` : "";
+  const merge = vMerge ? `<w:vMerge w:val="${vMerge}"/>` : "";
   return [
-    `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${shd}<w:vAlign w:val="top"/></w:tcPr>`,
-    `<w:p><w:pPr><w:spacing w:after="40"/></w:pPr>${run(text, { bold, color, size })}</w:p>`,
+    `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${merge}${shd}<w:vAlign w:val="top"/></w:tcPr>`,
+    `<w:p><w:pPr><w:spacing w:after="40"/></w:pPr>${text ? run(text, { bold, color, size }) : ""}</w:p>`,
     "</w:tc>",
   ].join("");
 }
@@ -55,30 +69,45 @@ const PAGE_H = 12240;
 const MARGIN = 720;
 const USABLE = PAGE_W - 2 * MARGIN;
 
-const HEADER_FILL = "1F4E79"; // dark blue header row (per the table style guide)
-const LABEL_FILL = "F2F2F2"; // light gray row-label column
+const HEADER_FILL = "C9DAF8"; // light blue from the Decision Table template
 // Per-cell rating fills: green = best, yellow = medium, red = worst (ties allowed).
 const RATING_FILL = { green: "C6EFCE", yellow: "FFEB9C", red: "FFC7CE" };
-const BORDER = '<w:top w:val="single" w:sz="4" w:color="BFBFBF"/><w:left w:val="single" w:sz="4" w:color="BFBFBF"/><w:bottom w:val="single" w:sz="4" w:color="BFBFBF"/><w:right w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideH w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideV w:val="single" w:sz="4" w:color="BFBFBF"/>';
+const BORDER = '<w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/><w:insideH w:val="single" w:sz="4" w:color="000000"/><w:insideV w:val="single" w:sz="4" w:color="000000"/>';
 
 function documentXml(table) {
-  const labelW = 2000;
-  const optionW = Math.floor((USABLE - labelW) / table.columns.length);
-  const widths = [labelW, ...table.columns.map(() => optionW)];
+  const categoryW = 1500;
+  const featureW = 2200;
+  const optionW = Math.floor((USABLE - categoryW - featureW) / table.columns.length);
+  const widths = [categoryW, featureW, ...table.columns.map(() => optionW)];
 
   const headerRow = [
     "<w:tr><w:trPr><w:tblHeader/></w:trPr>",
-    cell("Decision row", { width: widths[0], fill: HEADER_FILL, bold: true, color: "FFFFFF" }),
-    ...table.columns.map((c, i) => cell(c, { width: widths[i + 1], fill: HEADER_FILL, bold: true, color: "FFFFFF" })),
+    cell("Category", { width: widths[0], fill: HEADER_FILL, bold: true }),
+    cell("Feature", { width: widths[1], fill: HEADER_FILL, bold: true }),
+    ...table.columns.map((c, i) => cell(`${i + 1}. ${c}`, { width: widths[i + 2], fill: HEADER_FILL, bold: true })),
     "</w:tr>",
   ].join("");
 
-  const bodyRows = table.rows.map((r) => [
-    "<w:tr>",
-    cell(r.label, { width: widths[0], fill: LABEL_FILL, bold: true }),
-    ...r.cells.map((c, i) => cell(c, { width: widths[i + 1], fill: RATING_FILL[r.ratings?.[i]] ?? null })),
-    "</w:tr>",
-  ].join("")).join("");
+  const bodyRows = table.rows.map((r, rowIndex) => {
+    const category = r.category || "Evaluation";
+    const feature = r.feature || r.label;
+    const previousCategory = table.rows[rowIndex - 1]?.category;
+    const nextCategory = table.rows[rowIndex + 1]?.category;
+    const continuing = category === previousCategory;
+    const merge = continuing ? "continue" : category === nextCategory ? "restart" : null;
+    const isDecision = category === "Decision";
+    return [
+      "<w:tr>",
+      cell(continuing ? "" : category, { width: widths[0], bold: true, vMerge: merge }),
+      cell(feature, { width: widths[1], bold: true }),
+      ...r.cells.map((c, i) => cell(c, {
+        width: widths[i + 2],
+        fill: RATING_FILL[r.ratings?.[i]] ?? null,
+        bold: isDecision && i === r.decision_index,
+      })),
+      "</w:tr>",
+    ].join("");
+  }).join("");
 
   const tbl = [
     "<w:tbl><w:tblPr>",
@@ -93,14 +122,26 @@ function documentXml(table) {
     "</w:tbl>",
   ].join("");
 
+  const legend = [
+    "<w:tbl><w:tblPr>",
+    `<w:tblW w:w="${USABLE}" w:type="dxa"/><w:tblLayout w:type="fixed"/>`,
+    "</w:tblPr><w:tr>",
+    cell("Green — strongest / positive", { width: Math.floor(USABLE / 3), fill: RATING_FILL.green, bold: true }),
+    cell("Yellow — mixed / moderate", { width: Math.floor(USABLE / 3), fill: RATING_FILL.yellow, bold: true }),
+    cell("Red — weakest / negative", { width: Math.floor(USABLE / 3), fill: RATING_FILL.red, bold: true }),
+    "</w:tr></w:tbl>",
+  ].join("");
+
   const body = [
-    para(run(table.title, { bold: true, size: 32 }), { spacingAfter: 60 }),
-    para(run("Decision question: ", { bold: true, size: 20 }) + run(table.decision_question, { size: 20 }), { spacingAfter: 40 }),
+    para(run(`Decision Table: ${table.title}`, { bold: true, size: 36 }), { spacingAfter: 80 }),
+    para(run("Question: ", { bold: true, size: 22 }) + run(table.decision_question, { size: 22 }), { spacingAfter: 80 }),
+    para(run("Legend", { bold: true, size: 20 }), { spacingAfter: 30 }),
+    legend,
     table.situation
-      ? para(run("Situation: ", { bold: true, size: 20 }) + run(table.situation, { size: 20 }), { spacingAfter: 40 })
+      ? para(run("Situation: ", { bold: true, size: 18 }) + run(table.situation, { size: 18 }), { spacingAfter: 40 })
       : "",
     table.recommendation_preview
-      ? para(run("Recommendation preview: ", { bold: true, size: 20 }) + run(table.recommendation_preview, { size: 20 }), { spacingAfter: 160 })
+      ? para(run("Recommendation preview: ", { bold: true, size: 18 }) + run(table.recommendation_preview, { size: 18 }), { spacingAfter: 120 })
       : "",
     tbl,
     ...(table.notes?.length
@@ -122,12 +163,32 @@ const CONTENT_TYPES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
   + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
   + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
   + '<Default Extension="xml" ContentType="application/xml"/>'
+  + '<Default Extension="odttf" ContentType="application/vnd.openxmlformats-officedocument.obfuscatedFont"/>'
   + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+  + '<Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/>'
   + "</Types>";
 
 const RELS = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
   + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
   + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+  + "</Relationships>";
+
+const DOCUMENT_RELS = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+  + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>'
+  + "</Relationships>";
+
+const FONT_TABLE = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+  + '<w:font w:name="IBM Plex Sans"><w:family w:val="swiss"/><w:pitch w:val="variable"/>'
+  + `<w:embedRegular r:id="rId1" w:fontKey="{${REGULAR_KEY}}" w:subsetted="false"/>`
+  + `<w:embedBold r:id="rId2" w:fontKey="{${SEMIBOLD_KEY}}" w:subsetted="false"/>`
+  + '</w:font></w:fonts>';
+
+const FONT_RELS = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+  + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/IBMPlexSans-Regular.odttf"/>'
+  + '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/IBMPlexSans-SemiBold.odttf"/>'
   + "</Relationships>";
 
 // ---------------------------------------------------------------------------
@@ -209,5 +270,10 @@ export function decisionTableDocx(table) {
     { name: "[Content_Types].xml", data: Buffer.from(CONTENT_TYPES, "utf8") },
     { name: "_rels/.rels", data: Buffer.from(RELS, "utf8") },
     { name: "word/document.xml", data: Buffer.from(documentXml(table), "utf8") },
+    { name: "word/_rels/document.xml.rels", data: Buffer.from(DOCUMENT_RELS, "utf8") },
+    { name: "word/fontTable.xml", data: Buffer.from(FONT_TABLE, "utf8") },
+    { name: "word/_rels/fontTable.xml.rels", data: Buffer.from(FONT_RELS, "utf8") },
+    { name: "word/fonts/IBMPlexSans-Regular.odttf", data: obfuscateFont(REGULAR_FONT, REGULAR_KEY) },
+    { name: "word/fonts/IBMPlexSans-SemiBold.odttf", data: obfuscateFont(SEMIBOLD_FONT, SEMIBOLD_KEY) },
   ]);
 }

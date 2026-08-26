@@ -476,8 +476,11 @@ async function generateTable(id, delib, verdictRaw) {
     columns: table.columns.map(sanitizeOpinion),
     rows: table.rows.map((r) => ({
       label: sanitizeOpinion(r.label),
+      category: sanitizeOpinion(r.category),
+      feature: sanitizeOpinion(r.feature),
       cells: r.cells.map(sanitizeOpinion),
       ratings: r.ratings, // color hints (green/yellow/red/null) — no text to scrub
+      ...(Number.isInteger(r.decision_index) ? { decision_index: r.decision_index } : {}),
     })),
     notes: (table.notes ?? []).map(sanitizeOpinion),
   };

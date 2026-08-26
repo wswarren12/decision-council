@@ -1,21 +1,19 @@
 // Stage 4 — the Chairperson's decision table and its Word (.docx) render.
 //
-// The table follows the decision-table skill v1.1.0: Situation block,
-// row-label column, an honest default path (Status Quo / No action /
-// Default path), 1–4 options, constituent-tailored evaluation rows, evidence
-// markers, and mandatory Recommendation + Notes rows. validateDecisionTable
-// is the shape gate for model output AND for the stateless docx endpoint's
-// input.
+// The table follows the desktop Decision Table template: grouped Category /
+// Feature rows, an honest default path, 1–4 options, a color legend, and one
+// selected Decision as the final row. Notes stay below the grid.
 
 import { describe, it, expect } from 'vitest';
 import {
   buildDecisionTablePrompt,
   buildIntakePrompt,
   buildResearchPrompt,
+  decisionRowParts,
   decisionTableMarkdown,
   validateDecisionTable,
 } from '../../lib/council-core.mjs';
-import { crc32, decisionTableDocx, escXml, zipStore } from '../../lib/docx.mjs';
+import { crc32, decisionTableDocx, escXml, obfuscateFont, zipStore } from '../../lib/docx.mjs';
 
 const goodTable = () => ({
   title: 'Cutover timing',
@@ -24,11 +22,12 @@ const goodTable = () => ({
   recommendation_preview: 'Wait for the boundary.',
   columns: ['Status Quo — keep the form', 'Boundary Cutover'],
   rows: [
-    { label: 'Description', cells: ['Form stays.', 'Cut at boundary.'] },
-    { label: 'Member impact', cells: ['No impact.', 'Favorable: clean reset.'] },
-    { label: 'Recommendation', cells: ['Bridge only.', 'Recommended primary direction.'] },
-    { label: 'Notes / open questions', cells: ['Assumes no data corruption.', 'Dry-run owner unnamed.'] },
+    { category: 'Overview', feature: 'Description', cells: ['N/A: Form stays.', 'N/A: Cut at boundary.'], ratings: [null, null] },
+    { category: 'Impact', feature: 'Member experience', cells: ['Low / neutral: Familiar flow.', 'High positive: Clean reset.'], ratings: ['red', 'green'] },
+    { category: 'Impact', feature: 'Operational load', cells: ['Moderate negative: Dual maintenance.', 'High positive: One clean cutover.'], ratings: ['red', 'green'] },
   ],
+  decision: { option_index: 2, statement: 'Choose Boundary Cutover for the cleanest member and operational transition.' },
+  notes: ['Assumes no data corruption.', 'Dry-run owner unnamed.'],
 });
 
 describe('validateDecisionTable', () => {
@@ -42,24 +41,63 @@ describe('validateDecisionTable', () => {
     expect(t.rows[0].ratings).toEqual([null, null]); // missing entirely → all null
   });
 
-  it('accepts and normalizes a well-formed table', () => {
+  it('keeps model-supplied category/feature groups and appends Decision last', () => {
     const t = validateDecisionTable(goodTable());
     expect(t).not.toBeNull();
     expect(t.columns).toHaveLength(2);
-    // The legacy notes row is extracted out of the grid into notes[].
-    expect(t.rows).toHaveLength(3);
-    expect(t.rows.some((r) => /notes/i.test(r.label))).toBe(false);
+    expect(t.rows).toHaveLength(4);
+    expect(t.rows.slice(1, 3).map((r) => r.category)).toEqual(['Impact', 'Impact']);
+    expect(t.rows[1]).toMatchObject({ category: 'Impact', feature: 'Member experience' });
+    expect(t.rows.at(-1)).toMatchObject({
+      category: 'Decision', feature: 'Mark the option you picked. (documents outcome for others)', decision_index: 1,
+      cells: ['', 'Choose Boundary Cutover for the cleanest member and operational transition.'],
+      ratings: [null, 'green'],
+    });
     expect(t.notes).toEqual(['Assumes no data corruption.', 'Dry-run owner unnamed.']);
     expect(t.situation).toContain('Decide by Friday');
   });
 
-  it('accepts notes as a top-level array (current contract)', () => {
+  it('keeps familiar criteria as features under compact template categories', () => {
+    expect(decisionRowParts('Operational impact')).toEqual({ category: 'Impact', feature: 'Operational impact' });
+    expect(decisionRowParts('Time / cost')).toEqual({ category: 'Delivery', feature: 'Time / cost' });
+    expect(decisionRowParts('Key risks')).toEqual({ category: 'Risk', feature: 'Key risks' });
+    expect(decisionRowParts('Recommendation')).toEqual({ category: 'Decision', feature: 'Recommendation' });
+  });
+
+  it('rejects scattered category rows instead of rendering broken merged groups', () => {
+    const bad = goodTable();
+    bad.rows[2].category = 'Overview';
+    expect(validateDecisionTable(bad)).toBeNull();
+  });
+
+  it('normalizes legacy Recommendation and Notes rows into the new final Decision shape', () => {
     const t = goodTable();
-    t.rows = t.rows.filter((r) => !/notes/i.test(r.label));
-    t.notes = ['Assumes flat traffic.'];
+    delete t.decision;
+    delete t.notes;
+    t.rows.push(
+      { label: 'Recommendation', cells: ['Bridge only.', 'Recommended primary direction.'], ratings: ['red', 'green'] },
+      { label: 'Notes / open questions', cells: ['Assumes flat traffic.', 'Dry-run owner unnamed.'] },
+    );
     const v = validateDecisionTable(t);
     expect(v).not.toBeNull();
-    expect(v.notes).toEqual(['Assumes flat traffic.']);
+    expect(v.rows.at(-1)).toMatchObject({ category: 'Decision', decision_index: 1 });
+    expect(v.notes).toEqual(['Assumes flat traffic.', 'Dry-run owner unnamed.']);
+  });
+
+  it('groups legacy features by inferred category before the final Decision row', () => {
+    const legacy = {
+      ...goodTable(), decision: undefined,
+      rows: [
+        { label: 'Description', cells: ['Wait.', 'Ship.'] },
+        { label: 'Member impact', cells: ['Low.', 'High.'] },
+        { label: 'Cost profile', cells: ['Low.', 'Medium.'] },
+        { label: 'Legal / compliance exposure', cells: ['Low.', 'Medium.'] },
+        { label: 'Key risks', cells: ['Delay.', 'Execution.'] },
+        { label: 'Recommendation', cells: ['Fallback.', 'Recommended.'], ratings: ['red', 'green'] },
+      ],
+    };
+    const v = validateDecisionTable(legacy);
+    expect(v.rows.map((r) => r.category)).toEqual(['Overview', 'Impact', 'Impact', 'Delivery', 'Risk', 'Decision']);
   });
 
   it('requires the first column to be an accurately-labeled default path', () => {
@@ -85,16 +123,13 @@ describe('validateDecisionTable', () => {
     expect(validateDecisionTable(bad)).toBeNull();
   });
 
-  it('requires a Recommendation row and at least one note — without them it is a discovery dump', () => {
-    const noReco = goodTable();
-    noReco.rows = noReco.rows.filter((r) => r.label !== 'Recommendation');
-    // keep row count valid by padding a filler row
-    noReco.rows.push({ label: 'Time / cost', cells: ['None.', 'Two weeks.'] });
-    expect(validateDecisionTable(noReco)).toBeNull();
+  it('requires one selected decision and at least one note', () => {
+    const noDecision = goodTable();
+    delete noDecision.decision;
+    expect(validateDecisionTable(noDecision)).toBeNull();
 
     const noNotes = goodTable();
-    noNotes.rows = noNotes.rows.filter((r) => !/notes/i.test(r.label));
-    noNotes.rows.push({ label: 'Time / cost', cells: ['None.', 'Two weeks.'] });
+    noNotes.notes = [];
     expect(validateDecisionTable(noNotes)).toBeNull();
   });
 
@@ -134,10 +169,14 @@ describe('buildDecisionTablePrompt', () => {
     mode: 'full',
   });
 
-  it('carries the decision-table method: honest default path, named options, mandatory closing row', () => {
+  it('requires grouped Category/Feature rows and one selected Decision', () => {
     expect(prompt).toMatch(/TRUE default path/i);
     expect(prompt).toMatch(/never a strawman|never 'Option A'/i);
-    expect(prompt).toMatch(/final row MUST be 'Recommendation'/);
+    expect(prompt).toMatch(/2–4 meaningful categories with 2–3 specific features/i);
+    expect(prompt).toMatch(/Repeat each category name EXACTLY/i);
+    expect(prompt).toMatch(/Do NOT create a Recommendation, Decision, or Notes row/i);
+    expect(prompt).toMatch(/decision\.option_index.*1-based/i);
+    expect(prompt).toMatch(/only the chosen option cell highlighted and bold/i);
     expect(prompt).toMatch(/label \+ mechanism/i);
   });
 
@@ -147,14 +186,16 @@ describe('buildDecisionTablePrompt', () => {
     expect(prompt).toMatch(/~est\./);
     expect(prompt).toMatch(/Unknown \/ needs input/);
     expect(prompt).toMatch(/effort or ROI/i);
-    expect(prompt).toMatch(/reverse the recommendation/i);
-    expect(prompt).toMatch(/40 words or fewer/);
+    expect(prompt).toMatch(/reversal conditions/i);
+    expect(prompt).toMatch(/20 words or fewer/);
+    expect(prompt).toMatch(/High positive:/);
+    expect(prompt).toMatch(/N\/A:/);
   });
 
   it('keeps the council invisible in the table and moves notes below it', () => {
     expect(prompt).toMatch(/never mention the advisors/i);
     expect(prompt).toMatch(/neutral analyst voice/i);
-    expect(prompt).toMatch(/Do NOT include a notes row/);
+    expect(prompt).toMatch(/Do NOT create a Recommendation, Decision, or Notes row/);
     expect(prompt).toMatch(/"notes": \[/);
   });
 
@@ -230,9 +271,10 @@ describe('markdown render', () => {
     expect(md).toContain('**Decision question:** Cut over now or at the boundary?');
     expect(md).not.toContain('**Mode:**');
     expect(md).toContain('**Situation:**');
-    expect(md).toContain('| Decision row | Status Quo — keep the form | Boundary Cutover |');
-    expect(md).toContain('| --- | --- | --- |');
-    expect(md).toContain('| **Recommendation** | Bridge only. | Recommended primary direction. |');
+    expect(md).toContain('**Legend:** 🟢 strongest / positive · 🟡 mixed / moderate · 🔴 weakest / negative');
+    expect(md).toContain('| Category | Feature | 1. Status Quo — keep the form | 2. Boundary Cutover |');
+    expect(md).toContain('| --- | --- | --- | --- |');
+    expect(md).toContain('| **Decision** | **Mark the option you picked. (documents outcome for others)** |  | **🟢 Choose Boundary Cutover for the cleanest member and operational transition.** |');
     // Notes live under the table, not in the grid.
     expect(md).not.toContain('| **Notes / open questions**');
     expect(md).toContain('## Notes / open questions');
@@ -257,6 +299,15 @@ describe('docx render', () => {
     expect(crc32(Buffer.from('123456789'))).toBe(0xcbf43926);
   });
 
+  it('obfuscates embedded fonts reversibly with the OOXML font key', () => {
+    const font = Buffer.alloc(64, 7);
+    const key = '001B70DC-AA60-4AD5-90EC-18A0948E1EAE';
+    const encoded = obfuscateFont(font, key);
+    expect(encoded.subarray(0, 32)).not.toEqual(font.subarray(0, 32));
+    expect(encoded.subarray(32)).toEqual(font.subarray(32));
+    expect(obfuscateFont(encoded, key)).toEqual(font);
+  });
+
   it('zipStore writes a readable stored archive (signatures + entry count)', () => {
     const buf = zipStore([{ name: 'a.txt', data: Buffer.from('hello') }]);
     expect(buf.readUInt32LE(0)).toBe(0x04034b50); // local header
@@ -264,15 +315,25 @@ describe('docx render', () => {
     expect(buf.readUInt16LE(buf.length - 22 + 10)).toBe(1); // total entries
   });
 
-  it('produces a docx with the three mandatory parts and the table content', () => {
+  it('produces a docx with embedded IBM Plex Sans and the table content', () => {
     const buf = decisionTableDocx(validateDecisionTable(goodTable()));
     const s = buf.toString('utf8');
     expect(buf.subarray(0, 2).toString()).toBe('PK');
     expect(s).toContain('[Content_Types].xml');
     expect(s).toContain('_rels/.rels');
     expect(s).toContain('word/document.xml');
+    expect(s).toContain('word/fontTable.xml');
+    expect(s).toContain('IBMPlexSans-Regular.odttf');
+    expect(s).toContain('IBMPlexSans-SemiBold.odttf');
     expect(s).toContain('Status Quo — keep the form');
-    expect(s).toContain('Recommended primary direction.');
+    expect(s).toContain('Category');
+    expect(s).toContain('Feature');
+    expect(s).toContain('Green — strongest / positive');
+    expect(s).toContain('w:ascii="IBM Plex Sans"');
+    expect(s).toContain('w:fill="C9DAF8"');
+    expect(s).toContain('Mark the option you picked. (documents outcome for others)');
+    expect(s).toContain('Choose Boundary Cutover for the cleanest member and operational transition.');
+    expect(s).toMatch(/<w:rFonts w:ascii="IBM Plex Sans" w:hAnsi="IBM Plex Sans"\/><w:b\/>[^<]*(?:<[^>]+>)*<w:t xml:space="preserve">Choose Boundary Cutover/);
     expect(s).toContain('Situation: ');
     expect(s).not.toContain('Mode: ');
     expect(s).toContain('Notes / open questions');

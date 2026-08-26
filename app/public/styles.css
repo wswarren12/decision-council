@@ -223,6 +223,7 @@ details[open] .caret { transform: rotate(180deg); }
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.09);
   overflow: hidden;
   animation: rise 0.45s ease both;
+  font-family: 'IBM Plex Sans', ui-sans-serif, sans-serif;
 }
 .decision-table-card .verdict-band { align-items: center; }
 .decision-table-card .dl-docx {
@@ -231,31 +232,39 @@ details[open] .caret { transform: rotate(180deg); }
   border-radius: calc(var(--dc-radius) - 4px); font-weight: 600;
 }
 .decision-table-card .dl-docx:disabled { opacity: 0.6; cursor: default; }
-.dt-meta { padding: 10px 18px 0; }
+.dt-meta { padding: 12px 18px 0; }
 .dt-meta p { margin: 4px 0; font-size: 13px; }
+.dt-meta .dt-title { font-size: 18px; margin-bottom: 10px; }
+.dt-legend {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  padding: 10px 18px 0; font-size: 12px;
+}
+.dt-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.dt-legend i { width: 12px; height: 12px; border: 1px solid #000; }
+.dt-legend .rate-green { background: #e7f4e4; }
+.dt-legend .rate-yellow { background: #fdf3d1; }
+.dt-legend .rate-red { background: #fbe3e4; }
 .dt-scroll { overflow-x: auto; padding: 10px 18px 16px; }
 .decision-table {
-  border-collapse: collapse; width: 100%; min-width: 640px;
-  font-size: 12.5px; line-height: 1.45;
+  border-collapse: collapse; width: 100%; min-width: 760px;
+  font-size: 12.5px; line-height: 1.4;
 }
 .decision-table th, .decision-table td {
-  border: 1px solid var(--dc-border);
-  padding: 7px 10px; text-align: left; vertical-align: top;
+  border: 1px solid #000;
+  padding: 7px 9px; text-align: left; vertical-align: top;
 }
 .decision-table thead th {
-  background: var(--dc-blue); color: #fff; font-weight: 600;
+  background: #c9daf8; color: var(--dc-ink); font-weight: 600;
   font-size: 12px;
 }
-.decision-table .row-label {
-  background: #f4f6f8; font-weight: 600; white-space: nowrap;
-}
-.decision-table thead .row-label { background: var(--dc-blue); }
-.decision-table .reco-row td { background: #fffbeb; }
+.decision-table .row-label { background: #fff; font-weight: 600; }
+.decision-table .category { width: 13%; }
+.decision-table .feature { width: 18%; }
 /* Per-cell ratings: green = best option, yellow = medium, red = worst (ties allowed) */
 .decision-table td.rate-green { background: #e7f4e4; }
 .decision-table td.rate-yellow { background: #fdf3d1; }
 .decision-table td.rate-red { background: #fbe3e4; }
-.decision-table .reco-row .row-label { background: #f4ecd4; }
+.decision-table .decision-cell { font-weight: 600; }
 
 /* the Chairperson's pre-council request for the status quo baseline */
 .context-request .context-answer {

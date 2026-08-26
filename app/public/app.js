@@ -904,18 +904,55 @@ function renderDecisionTable(table) {
   // Notes render BELOW the grid. Older payloads (demo fixture) still carry a
   // notes row — pull it out here so both shapes display the same way.
   const notes = [...(table.notes ?? [])];
-  const gridRows = table.rows.filter((r) => {
-    if (!/notes|open questions/i.test(r.label)) return true;
+  let gridRows = table.rows.filter((r) => {
+    if (!/notes|open questions/i.test(r.label || r.feature)) return true;
     for (const c of r.cells) if (c && c !== '—' && !notes.includes(c)) notes.push(c);
     return false;
   });
-  const header = ['Decision row', ...table.columns]
-    .map((c, i) => `<th${i === 0 ? ' class="row-label"' : ''}>${esc(c)}</th>`).join('');
-  const rows = gridRows.map((r) => `
-    <tr${/recommendation/i.test(r.label) ? ' class="reco-row"' : ''}>
-      <td class="row-label">${esc(r.label)}</td>
-      ${r.cells.map((c, i) => `<td${r.ratings?.[i] ? ` class="rate-${r.ratings[i]}"` : ''}>${esc(c)}</td>`).join('')}
-    </tr>`).join('');
+  // Normalize demo/history tables created before the template had a dedicated
+  // Decision row. New tables already arrive in this final shape.
+  if (!gridRows.some((r) => r.category === 'Decision' && Number.isInteger(r.decision_index))) {
+    const oldIndex = gridRows.findIndex((r) => r.category === 'Decision' || /^(recommendation|decision|recommended decision)$/i.test(r.label || r.feature));
+    if (oldIndex >= 0) {
+      const old = gridRows[oldIndex];
+      let selected = old.ratings?.findIndex((rating) => rating === 'green') ?? -1;
+      if (selected < 0) selected = old.cells.findIndex((text) => /recommended|adopt|choose|primary direction/i.test(text));
+      if (selected >= 0) {
+        gridRows = gridRows.filter((_, i) => i !== oldIndex);
+        gridRows.push({
+          label: 'Decision', category: 'Decision', feature: 'Mark the option you picked. (documents outcome for others)', decision_index: selected,
+          cells: table.columns.map((_, i) => i === selected ? old.cells[selected] : ''),
+          ratings: table.columns.map((_, i) => i === selected ? 'green' : null),
+        });
+      }
+    }
+  }
+  const categoryFor = (r) => r.category || (
+    /recommendation/i.test(r.label) ? 'Decision'
+      : /description|problem solved|primary objective|outcome/i.test(r.label) ? 'Overview'
+        : /member|user|operational|technical|systems|legal|compliance|tax|impact|record integrity/i.test(r.label) ? 'Impact'
+          : /time|cost|effort|speed|timeline|resource/i.test(r.label) ? 'Delivery'
+            : /risk|revers|constraint|block|dependenc|precondition/i.test(r.label) ? 'Risk' : 'Evaluation'
+  );
+  const header = ['Category', 'Feature', ...table.columns.map((c, i) => `${i + 1}. ${c}`)]
+    .map((c) => `<th>${esc(c)}</th>`).join('');
+  const rows = gridRows.map((r, index) => {
+    const category = categoryFor(r);
+    const feature = r.feature || r.label;
+    const startsCategory = index === 0 || categoryFor(gridRows[index - 1]) !== category;
+    let span = 1;
+    while (index + span < gridRows.length && categoryFor(gridRows[index + span]) === category) span++;
+    const isDecision = category === 'Decision';
+    return `
+      <tr${isDecision ? ' class="decision-row"' : ''}>
+        ${startsCategory ? `<td class="row-label category" rowspan="${span}">${esc(category)}</td>` : ''}
+        <td class="row-label feature">${esc(feature)}</td>
+        ${r.cells.map((c, i) => {
+          const classes = [r.ratings?.[i] ? `rate-${r.ratings[i]}` : '', isDecision && i === r.decision_index ? 'decision-cell' : ''].filter(Boolean);
+          return `<td${classes.length ? ` class="${classes.join(' ')}"` : ''}>${esc(c)}</td>`;
+        }).join('')}
+      </tr>`;
+  }).join('');
   const node = el(`
     <div class="decision-table-card">
       <div class="verdict-band">
@@ -926,10 +963,16 @@ function renderDecisionTable(table) {
         </span>
       </div>
       <div class="dt-meta">
-        <p><strong>${esc(table.title)}</strong></p>
-        <p><strong>Decision question:</strong> ${esc(table.decision_question)}</p>
+        <p class="dt-title"><strong>Decision Table: ${esc(table.title)}</strong></p>
+        <p><strong>Question:</strong> ${esc(table.decision_question)}</p>
         ${table.situation ? `<p><strong>Situation:</strong> ${esc(table.situation)}</p>` : ''}
         ${table.recommendation_preview ? `<p><strong>Recommendation preview:</strong> ${esc(table.recommendation_preview)}</p>` : ''}
+      </div>
+      <div class="dt-legend" aria-label="Cell color legend">
+        <strong>Legend</strong>
+        <span><i class="rate-green"></i> Strongest / positive</span>
+        <span><i class="rate-yellow"></i> Mixed / moderate</span>
+        <span><i class="rate-red"></i> Weakest / negative</span>
       </div>
       <div class="dt-scroll">
         <table class="decision-table">
