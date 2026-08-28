@@ -341,7 +341,7 @@ export function buildDecisionTablePrompt({ preamble, restated, question, opinion
     "Build the table by these rules:",
     "- Situation: write a 'situation' field of 3–5 sentences a cold reader can act on — the forcing event, 2–3 quantities that size the issue, the decide-by date or timing constraint, and the cost of no decision. If a required quantity or date is genuinely unavailable from the deliberation, write 'needs input' rather than inventing it.",
     "- Columns: the first column is the TRUE default path — the member's real current path if nothing changes, stated honestly (what continues, what stays unsolved, why it may still be tolerable for now). It is never a strawman. Label it accurately: 'Status Quo', 'No action', or 'Default path'; if the current path expires or is infeasible, keep it only as a counterfactual and state the failure date or constraint in its cells. Then 1–4 genuinely distinct, mutually exclusive options drawn from the deliberation (the member's proposal is one; add others only if the council actually surfaced them). Name each option by label + mechanism (e.g. 'Boundary Cutover + Warm Start'), never 'Option A'.",
-    "- Category / Feature rows: produce 2–4 meaningful categories with 2–3 specific features or considerations under each (5–9 evaluation rows total). Repeat each category name EXACTLY on its contiguous feature rows so the renderer can merge the Category cells. Keep the familiar categories when relevant: Member / User impact, Operations, Technical / Systems, Legal / Compliance / Tax, Time / Cost, and Risk / Reversibility. A feature is the specific consideration being compared inside that category; do not make every feature its own category. Every feature row must discriminate among options — no filler. Do NOT create a Recommendation, Decision, or Notes row; the renderer appends the final Decision row from the top-level 'decision' object, and Notes render below the table.",
+    "- Category / Feature rows: produce 2–6 meaningful categories with 2–3 specific features or considerations under each (up to 12 evaluation rows total). Repeat each category name EXACTLY on its contiguous feature rows so the renderer can merge the Category cells. Keep the familiar categories when relevant: Member / User impact, Operations, Technical / Systems, Legal / Compliance / Tax, Time / Cost, and Risk / Reversibility. A feature is the specific consideration being compared inside that category; do not make every feature its own category. Every feature row must discriminate among options — no filler. Do NOT create a Recommendation, Decision, or Notes row; the renderer appends the final Decision row from the top-level 'decision' object, and Notes render below the table.",
     "- Blocking issues: if an option has a constraint problem it must overcome to remain viable, don't just flag it — explain the issue, the fix or mitigation that would resolve it, and the rough effort or ROI of that fix (e.g. 'Requires SOC 2 before enterprise sales; ~one quarter of compliance work, unlocks the segment'). Never average a blocking issue into a favorable overall impression.",
     "- Cells: default to ONE short statement of 20 words or fewer (25 only when a blocking issue cannot stay accurate otherwise). Every cell MUST begin with exactly one scan label: 'High positive:', 'Moderate positive:', 'Low / neutral:', 'Moderate negative:', 'High negative:', 'N/A:', or 'Unknown / needs input:'. Use 'N/A:' for non-evaluative Description cells. Then state the concrete implication and mechanism; never write a vague 'more complex'. Keep parallel granularity across each row. Mark evidence confidence compactly: 'measured', '~est.' (with basis), or 'assumed' (repeat assumptions in Notes). Never convert missing evidence into polished certainty.",
     "- Decision: set 'decision.option_index' to the ONE recommended column using 1-based numbering, and write 'decision.statement' as a stand-alone recommendation of 20 words or fewer. It must follow from the verdict and table; put assumptions and reversal conditions in Notes. This becomes the last row: Category 'Decision', Feature 'Mark the option you picked. (documents outcome for others)', with only the chosen option cell highlighted and bold.",
@@ -416,7 +416,7 @@ export function validateDecisionTable(parsed) {
       rows.push(row);
     }
   }
-  if (rows.length < 3 || rows.length > 10 || !notes.length) return null;
+  if (rows.length < 3 || rows.length > 14 || !notes.length) return null;
   if (!hasNativeGroups) {
     const order = [...new Set(rows.map((row) => row.category))];
     rows.sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category));
@@ -432,7 +432,13 @@ export function validateDecisionTable(parsed) {
       categoryOrder.push(row.category);
     }
   }
-  if (categoryOrder.length < 2 || categoryOrder.length > 4 || ![...categoryCounts.values()].some((count) => count > 1)) return null;
+  // Up to 7 categories: the prompt names six familiar ones (Member, Operations,
+  // Technical, Legal/Tax, Time/Cost, Risk) plus an optional Overview, and rich
+  // multi-constituent decisions legitimately use them all. The renderer merges
+  // by contiguous category and is width-independent, so the ceiling only guards
+  // against a degenerate every-row-its-own-category table — which the
+  // "some group has >1 row" check already catches.
+  if (categoryOrder.length < 2 || categoryOrder.length > 7 || ![...categoryCounts.values()].some((count) => count > 1)) return null;
 
   let decisionIndex = Number(parsed.decision?.option_index) - 1;
   if (!Number.isInteger(decisionIndex) || decisionIndex < 0 || decisionIndex >= columns.length) {

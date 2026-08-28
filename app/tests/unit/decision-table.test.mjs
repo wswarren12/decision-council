@@ -145,6 +145,36 @@ describe('validateDecisionTable', () => {
     expect(validateDecisionTable(six)).toBeNull();
   });
 
+  it('accepts the 5–6 category tables that rich decisions actually produce', () => {
+    // Regression: a multi-constituent decision (e.g. cross-jurisdiction tax)
+    // legitimately spans Overview + Member impact + Legal/Tax + Delivery + Risk.
+    // The prompt itself names six familiar categories, so the validator must
+    // accept them rather than hard-rejecting anything past four.
+    const cols = ['Status Quo — no guidance', 'German memo', 'Multi-country memos', 'One-pager'];
+    const row = (category, feature) => ({ category, feature, cells: cols.map((_, i) => `c${i}`), ratings: cols.map(() => 'yellow') });
+    const rich = {
+      title: 'PLAA tax guidance', decision_question: 'How should we handle PLAA tax guidance?',
+      situation: '~104 members ask about PLAA tax across jurisdictions. Decide by Q3.',
+      recommendation_preview: 'Commission the German memo first.', columns: cols,
+      rows: [
+        row('Overview', 'Problem solved'),
+        row('Member impact', 'Clarity'), row('Member impact', 'Fairness'),
+        row('Legal / Compliance / Tax', 'German treatment'), row('Legal / Compliance / Tax', 'Swiss treatment'),
+        row('Delivery', 'Time'), row('Delivery', 'Cost'),
+        row('Risk', 'Reversibility'), row('Risk', 'Audit exposure'),
+      ],
+      decision: { option_index: 2, statement: 'Commission the German memo first.' },
+      notes: ['Assumes counsel availability.'],
+    };
+    const five = validateDecisionTable(rich);
+    expect(five, 'five categories').not.toBeNull();
+    expect(new Set(five.rows.slice(0, -1).map((r) => r.category)).size).toBe(5);
+
+    const sixed = structuredClone(rich);
+    sixed.rows.push({ category: 'Operations', feature: 'Support load', cells: cols.map((_, i) => `c${i}`), ratings: cols.map(() => 'yellow') });
+    expect(validateDecisionTable(sixed), 'six categories').not.toBeNull();
+  });
+
   it('rejects junk input outright', () => {
     expect(validateDecisionTable(null)).toBeNull();
     expect(validateDecisionTable('table please')).toBeNull();
@@ -172,7 +202,7 @@ describe('buildDecisionTablePrompt', () => {
   it('requires grouped Category/Feature rows and one selected Decision', () => {
     expect(prompt).toMatch(/TRUE default path/i);
     expect(prompt).toMatch(/never a strawman|never 'Option A'/i);
-    expect(prompt).toMatch(/2–4 meaningful categories with 2–3 specific features/i);
+    expect(prompt).toMatch(/2–6 meaningful categories with 2–3 specific features/i);
     expect(prompt).toMatch(/Repeat each category name EXACTLY/i);
     expect(prompt).toMatch(/Do NOT create a Recommendation, Decision, or Notes row/i);
     expect(prompt).toMatch(/decision\.option_index.*1-based/i);

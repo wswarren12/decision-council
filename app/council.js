@@ -454,8 +454,10 @@ async function generateTable(id, delib, verdictRaw) {
       verdict: stripMemoryBlock(verdictRaw),
       mode: delib.mode,
       researchText: delib.rounds.get('0:research') || '',
-    // 5000: cells + per-cell ratings arrays overflow 3000 and truncate the JSON.
-    }), { model: TABLE_MODEL, maxTokens: 5000 });
+    // 6500: up to 6 category groups × per-cell text + ratings arrays overflow
+    // 5000 and truncate the JSON (seen as json=false in logs on the richest,
+    // multi-jurisdiction tables).
+    }), { model: TABLE_MODEL, maxTokens: 6500 });
     const parsed = validateDecisionTable(extractJson(raw));
     if (!parsed) {
       // Structurally unusable output counts as a failed call: retry once.
